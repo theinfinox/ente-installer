@@ -370,7 +370,7 @@ configure_topology() {
         if [ "$EXIST_CHOICE" -ne 2 ]; then
             log_info "Aborting installation safely."
             echo -e "To change your IP, domain, or proxy settings without losing data, run:\n"
-            echo -e "  ${CYAN}cd ${TARGET_DIR} && ./reconfigure.sh${NC}\n"
+            echo -e "  ${CYAN}${TARGET_DIR}/reconfigure.sh${NC}\n"
             exit 0
         fi
         log_warn "Proceeding with fresh installation. Old database files will be safely archived."
@@ -991,13 +991,13 @@ print_summary() {
     echo -e "${BOLD}▶ Quick Getting Started Steps:${NC}"
     echo -e "  1. Open ${CYAN}${WEB_ORIGIN}${NC} in your browser and click ${BOLD}Get Started${NC}."
     echo -e "  2. When prompted for email verification, retrieve the OTP with:"
-    echo -e "     ${YELLOW}cd ${TARGET_DIR} && ./get-otp.sh${NC}"
+    echo -e "     ${YELLOW}${TARGET_DIR}/get-otp.sh${NC}"
     echo -e "  3. When asked to choose a plan, click ${BOLD}'Continue with free plan'${NC}."
     echo -e ""
     echo -e "${BOLD}▶ Storage Quota Notice (10 TB Auto-Applied):${NC}"
     echo -e "  • Your account is ${GREEN}automatically upgraded to 10 TB${NC} the moment you sign up!"
     echo -e "  • If you want to change or lower this quota later, simply run:"
-    echo -e "     ${YELLOW}cd ${TARGET_DIR} && ./set-quota.sh 50GB${NC}  (or 500GB, 2TB, 10TB)"
+    echo -e "     ${YELLOW}${TARGET_DIR}/set-quota.sh 50GB${NC}  (or 500GB, 2TB, 10TB)"
     echo -e ""
     echo -e "${BOLD}▶ Mobile App Setup (iOS & Android):${NC}"
     echo -e "  • Install the official ${BOLD}Ente Photos${NC} app."
@@ -1007,7 +1007,7 @@ print_summary() {
     echo -e ""
     echo -e "${BOLD}▶ Changing IP / Domain Later:${NC}"
     echo -e "  • If your server IP changes or you add a domain later, safely reconfigure anytime with:"
-    echo -e "     ${YELLOW}cd ${TARGET_DIR} && ./reconfigure.sh${NC}"
+    echo -e "     ${YELLOW}${TARGET_DIR}/reconfigure.sh${NC}"
     echo -e ""
     echo -e "${BOLD}▶ Security & Hardening Applied:${NC}"
     echo -e "  • Credentials & configuration files strictly locked to ${GREEN}chmod 600${NC} (owner-only)."

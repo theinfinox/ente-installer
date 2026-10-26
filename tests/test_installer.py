@@ -488,6 +488,22 @@ fi
     assert_test("install.sh supports apk package manager", "apk add" in content)
     assert_test("install.sh supports zypper package manager", "zypper install" in content)
 
+    # 8.7 Reconfigure.sh auto-locates stack from script directory without 'cd'
+    with tempfile.TemporaryDirectory() as suite_stack_dir:
+        with tempfile.TemporaryDirectory() as unrelated_work_dir:
+            import shutil
+            shutil.copy(reconfig_path, os.path.join(suite_stack_dir, "reconfigure.sh"))
+            with open(os.path.join(suite_stack_dir, "credentials.env"), "w") as f:
+                f.write("PG_PASSWORD=autoDetectTestPass\n")
+            with open(os.path.join(suite_stack_dir, "compose.yaml"), "w") as f:
+                f.write('services:\n  web:\n    ports:\n      - "3004:3000"\n')
+            with open(os.path.join(suite_stack_dir, "museum.yaml"), "w") as f:
+                f.write("db:\n  password: autoDetectTestPass\n")
+
+            no_cd_cmd = f"cd '{unrelated_work_dir}' && bash '{os.path.join(suite_stack_dir, 'reconfigure.sh')}' --dry-run <<< $'1\\n192.168.1.77\\n'"
+            code, out, err = run_bash_code(no_cd_cmd)
+            assert_test("reconfigure.sh auto-locates stack without 'cd' from any working directory", code == 0, err)
+
     # -------------------------------------------------------------------------
     # Final Report
     # -------------------------------------------------------------------------

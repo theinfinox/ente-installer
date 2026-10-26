@@ -45,16 +45,29 @@ echo -e "${NC}"
 echo -e "${CYAN}Change IP, Domain, or Reverse Proxy Settings Safely${NC}"
 echo -e "────────────────────────────────────────────────────────────────────────"
 
-# 1. Locate Target Directory
-TARGET_DIR="${1:-.}"
-if [[ "$TARGET_DIR" == --* ]]; then
-    TARGET_DIR="."
-fi
-TARGET_DIR="${TARGET_DIR/#\~/$HOME}"
+# 1. Locate Target Directory (Smart Auto-Detection without requiring 'cd')
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-if [ ! -f "$TARGET_DIR/credentials.env" ] || [ ! -f "$TARGET_DIR/compose.yaml" ]; then
-    if [ -f "$HOME/ente/credentials.env" ] && [ -f "$HOME/ente/compose.yaml" ]; then
+TARGET_DIR=""
+# Check if passed explicitly as an argument (and not a flag)
+if [ -n "$1" ] && [[ "$1" != --* ]]; then
+    TARGET_DIR="${1/#\~/$HOME}"
+fi
+
+# Auto-detect stack location in order of proximity:
+# 1. Directory where this reconfigure.sh script is located
+# 2. Current working directory
+# 3. Standard ~/ente directory
+# 4. Standard /DATA/AppData/ente directory
+if [ -z "$TARGET_DIR" ] || [ ! -f "$TARGET_DIR/compose.yaml" ]; then
+    if [ -f "$SCRIPT_DIR/compose.yaml" ] && [ -f "$SCRIPT_DIR/museum.yaml" ]; then
+        TARGET_DIR="$SCRIPT_DIR"
+    elif [ -f "./compose.yaml" ] && [ -f "./museum.yaml" ]; then
+        TARGET_DIR="$(pwd)"
+    elif [ -f "$HOME/ente/compose.yaml" ] && [ -f "$HOME/ente/museum.yaml" ]; then
         TARGET_DIR="$HOME/ente"
+    elif [ -f "/DATA/AppData/ente/compose.yaml" ] && [ -f "/DATA/AppData/ente/museum.yaml" ]; then
+        TARGET_DIR="/DATA/AppData/ente"
     else
         read -rp "Enter your Ente installation directory [default: $HOME/ente]: " INPUT_DIR
         TARGET_DIR="${INPUT_DIR:-$HOME/ente}"
@@ -62,9 +75,9 @@ if [ ! -f "$TARGET_DIR/credentials.env" ] || [ ! -f "$TARGET_DIR/compose.yaml" ]
     fi
 fi
 
-if [ ! -f "$TARGET_DIR/credentials.env" ] || [ ! -f "$TARGET_DIR/compose.yaml" ] || [ ! -f "$TARGET_DIR/museum.yaml" ]; then
+if [ ! -f "$TARGET_DIR/credentials.env" ] && [ ! -f "$TARGET_DIR/museum.yaml" ]; then
     echo -e "${RED}[✖ ERROR] Could not find valid Ente configuration files in: ${TARGET_DIR}${NC}"
-    echo -e "Expected: credentials.env, compose.yaml, and museum.yaml"
+    echo -e "Expected: compose.yaml and museum.yaml"
     exit 1
 fi
 
@@ -72,7 +85,7 @@ echo -e "${GREEN}[✔]${NC} Located active Ente stack at: ${BOLD}${TARGET_DIR}${
 
 # 2. Safely Load Existing Secrets (Without modifying them)
 get_cred() {
-    grep "^$1=" "$TARGET_DIR/credentials.env" | cut -d'=' -f2- | tr -d '\r\n'
+    (grep "^$1=" "$TARGET_DIR/credentials.env" 2>/dev/null || true) | cut -d'=' -f2- | tr -d '\r\n'
 }
 
 PG_PASS=$(get_cred "PG_PASSWORD")
@@ -89,16 +102,16 @@ CURRENT_API_ORIGIN=$(get_cred "API_ORIGIN")
 CURRENT_S3_ENDPOINT=$(get_cred "S3_ENDPOINT")
 
 # Extract existing ports from compose.yaml (supports both standard and loopback-bound ports)
-WEB_PORT=$(grep -E '[0-9]+:3000"' "$TARGET_DIR/compose.yaml" 2>/dev/null | sed -E 's/.*[^0-9]([0-9]+):3000".*/\1/' | head -n1)
+WEB_PORT=$((grep -E '[0-9]+:3000"' "$TARGET_DIR/compose.yaml" 2>/dev/null || true) | sed -E 's/.*[^0-9]([0-9]+):3000".*/\1/' | head -n1)
 WEB_PORT=${WEB_PORT:-3004}
 
-ALBUMS_PORT=$(grep -E '[0-9]+:3002"' "$TARGET_DIR/compose.yaml" 2>/dev/null | sed -E 's/.*[^0-9]([0-9]+):3002".*/\1/' | head -n1)
+ALBUMS_PORT=$((grep -E '[0-9]+:3002"' "$TARGET_DIR/compose.yaml" 2>/dev/null || true) | sed -E 's/.*[^0-9]([0-9]+):3002".*/\1/' | head -n1)
 ALBUMS_PORT=${ALBUMS_PORT:-3002}
 
-API_PORT=$(grep -E '[0-9]+:8080"' "$TARGET_DIR/compose.yaml" 2>/dev/null | sed -E 's/.*[^0-9]([0-9]+):8080".*/\1/' | head -n1)
+API_PORT=$((grep -E '[0-9]+:8080"' "$TARGET_DIR/compose.yaml" 2>/dev/null || true) | sed -E 's/.*[^0-9]([0-9]+):8080".*/\1/' | head -n1)
 API_PORT=${API_PORT:-8080}
 
-MINIO_PORT=$(grep -E '[0-9]+:3200"' "$TARGET_DIR/compose.yaml" 2>/dev/null | sed -E 's/.*[^0-9]([0-9]+):3200".*/\1/' | head -n1)
+MINIO_PORT=$((grep -E '[0-9]+:3200"' "$TARGET_DIR/compose.yaml" 2>/dev/null || true) | sed -E 's/.*[^0-9]([0-9]+):3200".*/\1/' | head -n1)
 MINIO_PORT=${MINIO_PORT:-3200}
 
 echo -e "\n${BOLD}Current Configuration:${NC}"
