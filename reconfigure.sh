@@ -404,3 +404,4 @@ echo -e "${BOLD}▶ Next Steps for Mobile App:${NC}"
 echo -e "  • If you updated your API URL, open the Ente app, ${BOLD}tap the logo 7 times${NC},"
 echo -e "    and set your API origin to: ${CYAN}${API_ORIGIN}${NC}"
 echo -e "${GREEN}════════════════════════════════════════════════════════════════════════${NC}\n"
+
