@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Ente All-in-One Fail-Safe Installer
-# Repository: https://github.com/ente-io/ente
+# Repository: https://github.com/ente/ente
 # ==============================================================================
 # Features:
 # - Automatic pre-flight system & architecture auditing
