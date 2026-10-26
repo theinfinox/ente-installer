@@ -417,6 +417,30 @@ configure_topology() {
             S3_DOMAIN=${S3_DOMAIN%/}
         fi
 
+        # Reverse Proxy Network Isolation & Security
+        echo -e "\n────────────────────────────────────────────────────────────────────────"
+        echo -e "${BOLD}Reverse Proxy Network Isolation & Security:${NC}"
+        echo -e "Where is your reverse proxy (Cloudflare Tunnel, Caddy, Nginx) running?\n"
+        echo -e "  ${BOLD}[Y] On THIS same server${NC} (Recommended)"
+        echo -e "      • Explanation: The Cloudflare Tunnel daemon (cloudflared) or Caddy"
+        echo -e "        runs directly on this machine."
+        echo -e "      • Security Benefit: Binds Ente ports to 127.0.0.1 (localhost only)."
+        echo -e "      • Problem Avoided: Prevents anyone on the public internet from bypassing"
+        echo -e "        your Cloudflare SSL/WAF by accessing your raw IP:PORT directly.\n"
+        echo -e "  ${BOLD}[n] On a SEPARATE machine or VM on your home network${NC}"
+        echo -e "      • Example: An Nginx Proxy Manager or Traefik VM on 192.168.1.10"
+        echo -e "        routing traffic to this Ente server on 192.168.1.50."
+        echo -e "      • Behavior: Binds ports to 0.0.0.0 so your remote proxy can reach Ente.\n"
+        read -rp "Is your reverse proxy running on this same server? [Y/n, default: Y]: " LOCAL_PROXY_CHOICE
+        LOCAL_PROXY_CHOICE=${LOCAL_PROXY_CHOICE:-Y}
+        if [[ "$LOCAL_PROXY_CHOICE" =~ ^[Yy]$ ]]; then
+            PORT_BIND_PREFIX="127.0.0.1:"
+            log_success "High-Security Mode: Host ports isolated to localhost (127.0.0.1)"
+        else
+            PORT_BIND_PREFIX=""
+            log_info "Standard Mode: Host ports bound to 0.0.0.0 for external proxy access"
+        fi
+
         WEB_ORIGIN="https://${WEB_DOMAIN}"
         API_ORIGIN="https://${API_DOMAIN}"
         S3_ENDPOINT="${S3_DOMAIN}"
@@ -424,6 +448,7 @@ configure_topology() {
         ARE_LOCAL_BUCKETS="false"
     else
         MODE="LAN"
+        PORT_BIND_PREFIX=""
         read -rp "Enter your server's reachable LAN IP [default: ${AUTO_LAN_IP}]: " INPUT_IP
         SERVER_IP="${INPUT_IP:-$AUTO_LAN_IP}"
         SERVER_IP=$(echo "$SERVER_IP" | tr -d '[:space:]')
@@ -530,7 +555,7 @@ key:
 jwt:
   secret: "${JWT_SECRET}"
 EOF
-    chmod 644 "$TARGET_DIR/museum.yaml"
+    chmod 600 "$TARGET_DIR/museum.yaml"
 
     cat <<EOF > "$TARGET_DIR/compose.yaml"
 services:
@@ -539,7 +564,7 @@ services:
     container_name: ente-museum
     restart: unless-stopped
     ports:
-      - "${API_PORT}:8080"
+      - "${PORT_BIND_PREFIX}${API_PORT}:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -567,8 +592,8 @@ services:
     container_name: ente-web
     restart: unless-stopped
     ports:
-      - "${WEB_PORT}:3000"
-      - "${ALBUMS_PORT}:3002"
+      - "${PORT_BIND_PREFIX}${WEB_PORT}:3000"
+      - "${PORT_BIND_PREFIX}${ALBUMS_PORT}:3002"
     environment:
       ENTE_API_ORIGIN: ${API_ORIGIN}
       ENTE_ALBUMS_ORIGIN: ${ALBUMS_ORIGIN}
@@ -596,7 +621,7 @@ services:
     container_name: ente-minio
     restart: unless-stopped
     ports:
-      - "${MINIO_PORT}:3200"
+      - "${PORT_BIND_PREFIX}${MINIO_PORT}:3200"
     environment:
       MINIO_ROOT_USER: "${MINIO_USER}"
       MINIO_ROOT_PASSWORD: "${MINIO_PASS}"
@@ -821,6 +846,10 @@ else
 fi
 
 if [ -n "$TARGET_USER" ]; then
+    if [[ ! "$TARGET_USER" =~ ^[0-9]+$ ]]; then
+        echo "Error: Target user ID must be numeric (e.g. 1580559962386438). Received: '$TARGET_USER'"
+        exit 1
+    fi
     WHERE_CLAUSE="WHERE user_id = $TARGET_USER"
 else
     WHERE_CLAUSE="WHERE user_id = (SELECT user_id FROM users ORDER BY creation_time ASC LIMIT 1)"
@@ -908,6 +937,15 @@ print_summary() {
     echo -e "${BOLD}▶ Changing IP / Domain Later:${NC}"
     echo -e "  • If your server IP changes or you add a domain later, safely reconfigure anytime with:"
     echo -e "     ${YELLOW}cd ${TARGET_DIR} && ./reconfigure.sh${NC}"
+    echo -e ""
+    echo -e "${BOLD}▶ Security & Hardening Applied:${NC}"
+    echo -e "  • Credentials & configuration files strictly locked to ${GREEN}chmod 600${NC} (owner-only)."
+    echo -e "  • Passwords & encryption keys generated with high-entropy /dev/urandom."
+    if [ "$PORT_BIND_PREFIX" = "127.0.0.1:" ]; then
+        echo -e "  • Reverse proxy ports ${GREEN}isolated to 127.0.0.1${NC} (direct WAN access prevented)."
+    else
+        echo -e "  • Host ports bound to 0.0.0.0 for LAN / remote reverse proxy access."
+    fi
     echo -e ""
     if [ "$MODE" = "DOMAIN" ]; then
         echo -e "${BOLD}▶ Reverse Proxy Templates:${NC}"

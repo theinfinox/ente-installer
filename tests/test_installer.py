@@ -87,8 +87,18 @@ def main():
     quota_match = re.search(r"cat <<'EOF' > \"\$TARGET_DIR/set-quota\.sh\"\n(.*?)\nEOF", content, re.DOTALL)
     assert_test("set-quota.sh template found in install.sh", bool(quota_match))
     if quota_match:
-        code, out, err = run_bash_code(f"bash -n << 'EOF'\n{quota_match.group(1)}\nEOF")
+        quota_content = quota_match.group(1)
+        code, out, err = run_bash_code(f"bash -n << 'EOF'\n{quota_content}\nEOF")
         assert_test("set-quota.sh passes bash syntax check", code == 0, err)
+        assert_test("set-quota.sh contains ^[0-9]+$ regex check for TARGET_USER", '^[0-9]+$' in quota_content)
+
+        test_valid_user = 'TARGET_USER="1580559962386438"; if [[ "$TARGET_USER" =~ ^[0-9]+$ ]]; then echo "VALID"; fi'
+        code, out, err = run_bash_code(test_valid_user)
+        assert_test("TARGET_USER numeric validation accepts valid user_id", out == "VALID")
+
+        test_invalid_user = 'TARGET_USER="admin; DROP TABLE users;"; if [[ ! "$TARGET_USER" =~ ^[0-9]+$ ]]; then echo "INVALID"; fi'
+        code, out, err = run_bash_code(test_invalid_user)
+        assert_test("TARGET_USER numeric validation rejects SQL injection / non-numeric string", out == "INVALID")
 
     # Extract .auto-quota-daemon.sh template
     daemon_match = re.search(r"cat <<'EOF' > \"\$TARGET_DIR/\.auto-quota-daemon\.sh\"\n(.*?)\nEOF", content, re.DOTALL)
@@ -132,8 +142,9 @@ echo "$BYTES"
     # -------------------------------------------------------------------------
     print(f"\n{CYAN}--> Validating Generated Configuration YAML Syntax:{RESET}")
     # Extract museum.yaml template
-    museum_template_match = re.search(r"cat <<EOF > \"\$TARGET_DIR/museum\.yaml\"\n(.*?)\nEOF\n    chmod 644 \"\$TARGET_DIR/museum\.yaml\"", content, re.DOTALL)
+    museum_template_match = re.search(r"cat <<EOF > \"\$TARGET_DIR/museum\.yaml\"\n(.*?)\nEOF\n\s+chmod 600 \"\$TARGET_DIR/museum\.yaml\"", content, re.DOTALL)
     assert_test("museum.yaml template found in install.sh", bool(museum_template_match))
+    assert_test("install.sh sets chmod 600 on museum.yaml", 'chmod 600 "$TARGET_DIR/museum.yaml"' in content)
 
     if museum_template_match:
         raw_museum = museum_template_match.group(1)
@@ -172,6 +183,7 @@ echo "$BYTES"
         raw_compose = compose_template_match.group(1)
         subbed_compose = raw_compose
         replacements = {
+            "${PORT_BIND_PREFIX}": "",
             "${API_PORT}": "8080",
             "${WEB_PORT}": "3004",
             "${ALBUMS_PORT}": "3002",
@@ -201,6 +213,21 @@ echo "$BYTES"
             assert_test("web port mapping matches remapped port", "3004:3000" in web_ports)
         except Exception as e:
             assert_test("compose.yaml is 100% valid YAML", False, str(e))
+
+        # Test Loopback Port Isolation Mode in compose.yaml
+        subbed_compose_isolated = raw_compose
+        replacements_isolated = dict(replacements)
+        replacements_isolated["${PORT_BIND_PREFIX}"] = "127.0.0.1:"
+        for k, v in replacements_isolated.items():
+            subbed_compose_isolated = subbed_compose_isolated.replace(k, v)
+        try:
+            parsed_isolated = yaml.safe_load(subbed_compose_isolated)
+            isolated_web_ports = parsed_isolated.get("services", {}).get("web", {}).get("ports", [])
+            assert_test("isolated compose.yaml binds web port to 127.0.0.1:3004:3000", "127.0.0.1:3004:3000" in isolated_web_ports)
+            isolated_api_ports = parsed_isolated.get("services", {}).get("museum", {}).get("ports", [])
+            assert_test("isolated compose.yaml binds api port to 127.0.0.1:8080:8080", "127.0.0.1:8080:8080" in isolated_api_ports)
+        except Exception as e:
+            assert_test("isolated compose.yaml is valid YAML", False, str(e))
 
     # -------------------------------------------------------------------------
     # Test 5: Domain Sanitization Parameter Expansion
@@ -245,7 +272,14 @@ echo "$clean_msg"
     code, out, err = run_bash_code(f"bash -n '{reconfig_path}'")
     assert_test("reconfigure.sh passes bash syntax check", code == 0, err)
 
-    # Test dry-run reconfiguration on a simulated active deployment
+    with open(reconfig_path, "r", encoding="utf-8") as f:
+        reconfig_content = f.read()
+
+    assert_test("reconfigure.sh sets chmod 600 on museum.yaml", 'chmod 600 "$TARGET_DIR/museum.yaml"' in reconfig_content)
+    assert_test("install.sh informs user of security hardening in summary", "Security & Hardening Applied" in content)
+    assert_test("reconfigure.sh informs user of security hardening in summary", "Security & Hardening Applied" in reconfig_content)
+
+    # Test dry-run reconfiguration on a simulated active deployment (LAN Mode)
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create mock credentials.env
         orig_pg_pass = "SuperSecretDbPassword9988"
@@ -293,7 +327,7 @@ s3:
         # Run reconfigure.sh simulation: select option 1 (LAN mode), IP 192.168.1.99
         reconfig_cmd = f"bash '{reconfig_path}' '{temp_dir}' --dry-run <<< $'1\\n192.168.1.99\\n'"
         code, out, err = run_bash_code(reconfig_cmd)
-        assert_test("reconfigure.sh executed successfully in dry-run mode", code == 0, err)
+        assert_test("reconfigure.sh executed successfully in LAN dry-run mode", code == 0, err)
 
         # Verify that original password was preserved
         with open(os.path.join(temp_dir, "credentials.env"), "r") as f:
@@ -310,6 +344,62 @@ s3:
         with open(os.path.join(temp_dir, "compose.yaml"), "r") as f:
             reconfig_compose = yaml.safe_load(f)
         assert_test("reconfigured compose.yaml is 100% valid YAML", isinstance(reconfig_compose, dict))
+
+    # Test dry-run reconfiguration in Domain Mode with Local Reverse Proxy Isolation
+    with tempfile.TemporaryDirectory() as temp_dir_domain:
+        orig_pg_pass = "DomainPassSecure77"
+        with open(os.path.join(temp_dir_domain, "credentials.env"), "w") as f:
+            f.write(f"""PG_USER=pguser
+PG_PASSWORD={orig_pg_pass}
+PG_DB=ente_db
+MINIO_ROOT_USER=minio-user-test
+MINIO_ROOT_PASSWORD=minio-pass-test
+MUSEUM_KEY_ENC=YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY=
+MUSEUM_KEY_HASH=YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTZBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWjEyMzQ1Ng==
+MUSEUM_JWT_SECRET=dGVzdC1qd3Qtc2VjcmV0LTEyMzQ1Njc4OTA=
+WEB_ORIGIN=http://127.0.0.1:3000
+API_ORIGIN=http://127.0.0.1:8080
+S3_ENDPOINT=127.0.0.1:3200
+""")
+        with open(os.path.join(temp_dir_domain, "compose.yaml"), "w") as f:
+            f.write("""services:
+  web:
+    ports:
+      - "3004:3000"
+      - "3002:3002"
+    environment:
+      ENTE_API_ORIGIN: http://127.0.0.1:8080
+  museum:
+    ports:
+      - "8080:8080"
+  minio:
+    ports:
+      - "3200:3200"
+""")
+        with open(os.path.join(temp_dir_domain, "museum.yaml"), "w") as f:
+            f.write(f"""db:
+  host: postgres
+  password: "{orig_pg_pass}"
+s3:
+  b2-eu-cen:
+    endpoint: "127.0.0.1:3200"
+""")
+
+        # Option 2 (Domain), root domain 'ente.example.com', default subdomains (Enter), proxy on same server (Y)
+        reconfig_domain_cmd = f"bash '{reconfig_path}' '{temp_dir_domain}' --dry-run <<< $'2\\nente.example.com\\n\\nY\\n'"
+        code, out, err = run_bash_code(reconfig_domain_cmd)
+        assert_test("reconfigure.sh executed successfully in Domain Mode", code == 0, err)
+        assert_test("reconfigure.sh Domain Mode displayed Security & Hardening banner", "Security & Hardening Applied" in out)
+        assert_test("reconfigure.sh Domain Mode confirmed localhost isolation", "isolated to 127.0.0.1" in out)
+
+        with open(os.path.join(temp_dir_domain, "compose.yaml"), "r") as f:
+            domain_compose = yaml.safe_load(f)
+        web_ports_domain = domain_compose.get("services", {}).get("web", {}).get("ports", [])
+        assert_test("Domain Mode bound web port to 127.0.0.1:3004:3000", "127.0.0.1:3004:3000" in web_ports_domain)
+        museum_ports_domain = domain_compose.get("services", {}).get("museum", {}).get("ports", [])
+        assert_test("Domain Mode bound museum port to 127.0.0.1:8080:8080", "127.0.0.1:8080:8080" in museum_ports_domain)
+        assert_test("Domain Mode generated Caddyfile reverse proxy snippet", os.path.exists(os.path.join(temp_dir_domain, "reverse-proxy", "Caddyfile.snippet")))
+        assert_test("Domain Mode generated Cloudflare Tunnel ingress guide", os.path.exists(os.path.join(temp_dir_domain, "reverse-proxy", "cloudflare-tunnel.md")))
 
     # -------------------------------------------------------------------------
     # Final Report
