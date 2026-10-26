@@ -30,6 +30,12 @@ chmod +x install.sh
 ./install.sh
 ```
 
+> [!TIP]
+> **Zero-Risk Dry-Run:** You can test pre-flight checks, port scanning, and configuration generation without pulling any Docker images or starting containers:
+> ```bash
+> ./install.sh --dry-run
+> ```
+
 ### What `install.sh` Does Automatically:
 * **Operating System & Architecture Check:** Strictly verifies Linux (including WSL2 on Windows); cleanly rejects native Windows shells (Git Bash / MSYS) with actionable guidance.
 * **Pre-Flight Hardware, Disk & Port Auditing:** Checks architecture, available RAM and disk space (warns if < 3 GB free), auto-installs Docker/Compose if missing (with user approval), and scans ports to avoid collisions (e.g. automatically moving Web UI from contested `:3000` to `:3004`).

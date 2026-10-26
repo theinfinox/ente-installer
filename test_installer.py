@@ -44,6 +44,10 @@ def run_bash_code(code):
     return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
 
 def main():
+    # Set utf-8 stdout encoding for Windows compatibility
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
+
     print(f"\n{CYAN}======================================================================{RESET}")
     print(f"{CYAN}       ENTE INSTALLER OFFLINE VALIDATION SUITE (ZERO IMAGE PULLS)       {RESET}")
     print(f"{CYAN}======================================================================{RESET}\n")
@@ -202,10 +206,10 @@ echo "$BYTES"
     for raw_domain, expected_domain in test_domains:
         bash_sanitizer = f"""
 ROOT_DOMAIN="{raw_domain}"
+ROOT_DOMAIN=$(echo "$ROOT_DOMAIN" | tr -d '[:space:]')
 ROOT_DOMAIN=${{ROOT_DOMAIN#https://}}
 ROOT_DOMAIN=${{ROOT_DOMAIN#http://}}
 ROOT_DOMAIN=${{ROOT_DOMAIN%/}}
-ROOT_DOMAIN=$(echo "$ROOT_DOMAIN" | tr -d '[:space:]')
 echo "$ROOT_DOMAIN"
 """
         code, out, err = run_bash_code(bash_sanitizer)
@@ -215,17 +219,21 @@ echo "$ROOT_DOMAIN"
     # Test 6: ANSI Stripping in Log Engine
     # -------------------------------------------------------------------------
     print(f"\n{CYAN}--> Validating ANSI Escape Code Stripping in Logger:{RESET}")
-    ansi_test = """
-MSG="\033[0;32m[✔] Success!\033[0m \033[1;33mWarning\033[0m"
+    ansi_test = r"""
+MSG=$'\033[0;32m[OK] Success!\033[0m \033[1;33mWarning\033[0m'
 clean_msg=$(printf '%b' "$MSG" | sed -E 's/\x1B\[[0-9;]*[mK]//g' 2>/dev/null || echo "$MSG")
 echo "$clean_msg"
 """
     code, out, err = run_bash_code(ansi_test)
-    assert_test("ANSI codes stripped cleanly from log messages", out == "[✔] Success! Warning", f"Got '{out}'")
+    assert_test("ANSI codes stripped cleanly from log messages", out == "[OK] Success! Warning", f"Got '{out}'")
 
     # -------------------------------------------------------------------------
     # Final Report
     # -------------------------------------------------------------------------
+    # Set utf-8 stdout encoding for Windows compatibility
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
+
     print(f"\n{CYAN}======================================================================{RESET}")
     print(f" TOTAL TESTS: {PASS_COUNT + FAIL_COUNT} | {GREEN}PASSED: {PASS_COUNT}{RESET} | {RED}FAILED: {FAIL_COUNT}{RESET}")
     print(f"{CYAN}======================================================================{RESET}\n")

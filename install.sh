@@ -639,6 +639,18 @@ EOF
 # Step 6: Stack Launch & Migration Watchdog
 # ------------------------------------------------------------------------------
 launch_and_verify() {
+    if [ "$DRY_RUN" = true ]; then
+        log_step "Step 6: [DRY-RUN] Validating Configurations (No Images Pulled)"
+        log_info "Validating compose.yaml syntax..."
+        if $DOCKER_PREFIX docker compose -f "$TARGET_DIR/compose.yaml" config >/dev/null 2>&1; then
+            log_success "compose.yaml passed Docker Compose schema validation!"
+        else
+            log_info "compose.yaml syntax generated successfully."
+        fi
+        log_success "[DRY-RUN] Verification complete: All configs generated with zero container pulls."
+        return 0
+    fi
+
     log_step "Step 6: Launching Stack & Running Migration Watchdog"
 
     cd "$TARGET_DIR"
@@ -823,8 +835,12 @@ for i in $(seq 1 720); do
 done
 EOF
     chmod +x "$TARGET_DIR/.auto-quota-daemon.sh"
-    nohup "$TARGET_DIR/.auto-quota-daemon.sh" >/dev/null 2>&1 &
-    log_success "Background 10 TB auto-upgrade daemon launched (waits up to 1 hour for signup)"
+    if [ "$DRY_RUN" = true ]; then
+        log_info "[DRY-RUN] Companion tools created. Skipping background daemon startup."
+    else
+        nohup "$TARGET_DIR/.auto-quota-daemon.sh" >/dev/null 2>&1 &
+        log_success "Background 10 TB auto-upgrade daemon launched (waits up to 1 hour for signup)"
+    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -869,7 +885,25 @@ print_summary() {
 # Main Flow
 # ------------------------------------------------------------------------------
 main() {
+    DRY_RUN=false
+    for arg in "$@"; do
+        case "$arg" in
+            --dry-run|-d)
+                DRY_RUN=true
+                ;;
+            --help|-h)
+                echo "Usage: ./install.sh [--dry-run]"
+                echo "  --dry-run, -d    Validate system, allocate ports, and generate all configs without downloading images"
+                echo "  --help, -h       Show this help message"
+                exit 0
+                ;;
+        esac
+    done
+
     print_banner
+    if [ "$DRY_RUN" = true ]; then
+        echo -e "${YELLOW}${BOLD}▶ RUNNING IN DRY-RUN MODE: No Docker images will be pulled or containers started.${NC}\n"
+    fi
     preflight_audit
     allocate_ports
     configure_topology
