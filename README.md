@@ -17,7 +17,8 @@
 8. [Step 6: Unlocking 10 TB / Unlimited Storage](#step-6-unlocking-10-tb--unlimited-storage)
 9. [Step 7: Remote Access & Mobile Apps (iOS / Android)](#step-7-remote-access--mobile-apps-ios--android)
 10. [Troubleshooting & Emergency Recovery Matrix](#10-troubleshooting--emergency-recovery-matrix)
-11. [Backup & Maintenance Playbook](#11-backup--maintenance-playbook)
+11. [Backup, Disaster Recovery & Maintenance Playbook](#11-backup-disaster-recovery--maintenance-playbook)
+12. [Production Security Hardening & LTS Best Practices](#12-production-security-hardening--lts-best-practices)
 
 ---
 
@@ -442,7 +443,7 @@ s3.yourdomain.com {
 
 ---
 
-## 11. Backup & Maintenance Playbook
+## 11. Backup, Disaster Recovery & Maintenance Playbook
 
 ### Backing Up Ente
 To create a complete, consistent backup of your entire instance:
@@ -453,8 +454,31 @@ To create a complete, consistent backup of your entire instance:
    ```
 2. **Backup Encrypted Photos:**
    Copy the `~/ente/minio_data` folder (or use `rclone` to mirror to an offsite location/NAS). Because all files are encrypted client-side with your master key, even unencrypted cloud backups of this folder are zero-knowledge secure.
-3. **Backup Configuration Keys:**
-   Securely store copies of `museum.yaml` and `compose.yaml`.
+3. **Backup Configuration Vault:**
+   Securely store copies of `credentials.env`, `museum.yaml`, and `compose.yaml`.
+
+---
+
+### Restoring from Backup (Disaster Recovery)
+If moving to a new server or recovering from storage failure:
+
+1. Deploy the clean Ente stack using `./install.sh`.
+2. Stop the core services before restoring:
+   ```bash
+   docker compose stop museum web
+   ```
+3. **Restore Database:**
+   ```bash
+   docker exec -i ente-postgres psql -U pguser -d ente_db < ~/ente-db-backup.sql
+   ```
+4. **Restore Photo Storage:**
+   Restore your backed-up `minio_data/` folder into `~/ente/minio_data/`.
+5. Restart services:
+   ```bash
+   docker compose start
+   ```
+
+---
 
 ### Updating Container Images Safely
 ```bash
@@ -463,3 +487,40 @@ docker compose pull
 docker compose up -d
 ```
 Docker will recreate only the updated containers while preserving all persistent data in `./pg_data` and `./minio_data`.
+
+---
+
+## 12. Production Security Hardening & LTS Best Practices
+
+### 1. File Permission Lockdown (`chmod 600`)
+`museum.yaml` and `credentials.env` contain your PostgreSQL database password, MinIO storage keys, encryption keys, and JWT secret. On shared or multi-user Linux machines, lock down these files to prevent unauthorized local reading:
+
+```bash
+chmod 600 ~/ente/museum.yaml ~/ente/credentials.env
+```
+> [!NOTE]
+> Docker daemon runs as root and can read `600` bind-mounted files without issue.
+
+---
+
+### 2. Localhost Port Isolation in Domain / Tunnel Mode
+When hosting publicly through **Cloudflare Tunnel** or a local **Caddy** reverse proxy running on the same host:
+* By default, Docker binds ports to `0.0.0.0` (all interfaces), which can leave raw HTTP ports reachable from the internet if your server has a public IP.
+* To ensure your Ente instance is **only** accessible through Cloudflare's WAF / SSL and never directly via raw IP, bind host ports to loopback (`127.0.0.1`) in `compose.yaml`:
+
+```yaml
+ports:
+  - "127.0.0.1:3004:3000"  # Web UI only bound to localhost
+  - "127.0.0.1:8080:8080"  # Core API only bound to localhost
+  - "127.0.0.1:3200:3200"  # S3 Storage only bound to localhost
+```
+
+---
+
+### 3. Long-Term Support (LTS) & Version Pinning
+* **Ente Services (`ghcr.io/ente/museum`, `ghcr.io/ente/web`):**
+  By default, `compose.yaml` uses the latest image tags. In critical production homelabs, you can pin specific releases (e.g. `ghcr.io/ente/museum:0.8.x`) in `compose.yaml` to prevent unexpected upstream breaking changes during routine `docker compose pull` commands.
+* **PostgreSQL 15 Lifecycle:**
+  `compose.yaml` is pinned to `postgres:15`. PostgreSQL 15 receives official community security updates and maintenance through **November 11, 2027**.
+* **Docker Compose Requirement:**
+  The automated bucket creation hook in `compose.yaml` uses the `post_start` lifecycle feature, which strictly requires **Docker Compose v2.28.0 or newer**. If deploying on an older Linux distribution, ensure your Docker Compose plugin is updated (`docker compose version`).
