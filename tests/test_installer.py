@@ -52,7 +52,8 @@ def main():
     print(f"{CYAN}       ENTE INSTALLER OFFLINE VALIDATION SUITE (ZERO IMAGE PULLS)       {RESET}")
     print(f"{CYAN}======================================================================{RESET}\n")
 
-    script_path = os.path.abspath("install.sh")
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    script_path = os.path.join(repo_root, "install.sh")
     assert_test("Installer file exists", os.path.exists(script_path), script_path)
 
     with open(script_path, "r", encoding="utf-8") as f:
