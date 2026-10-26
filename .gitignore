@@ -1,0 +1,7 @@
+# Backups
+.backup/
+.backup
+backups/
+backups
+*.backup
+*.bak
