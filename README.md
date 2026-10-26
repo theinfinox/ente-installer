@@ -45,7 +45,8 @@ chmod +x install.sh
 * **Cryptographic Vault:** Generates high-entropy secrets and stores them in `credentials.env` (`chmod 600`).
 * **Zero-Lock Database Boot:** Applies the hardened Postgres healthcheck parameters (`start_period: 60s`, `retries: 20`) to eliminate the "dirty migration" lock.
 * **Storage Auto-Upgrade (1-Hour Window):** Launches a background watcher that automatically boosts your account to **10 TB** upon signup.
-* **Sudo-Aware Helper Tools:** Creates `./get-otp.sh` and `./set-quota.sh <SIZE>` in your install directory, automatically detecting Docker permissions.
+* **Sudo-Aware Helper Tools:** Creates `./get-otp.sh`, `./set-quota.sh <SIZE>`, and `./reconfigure.sh` in your install directory, automatically detecting Docker permissions.
+* **Existing Deployment Safeguard:** If an active Ente instance is detected in the target directory, it warns you explicitly and offers to launch `./reconfigure.sh` instead of overwriting existing credentials.
 * **Reverse Proxy Snippets:** Generates ready-to-use Caddy and Cloudflare Zero Trust configurations if a domain is specified.
 * **Full Execution Timeline Logging (`ente-installer.log`):** Records every command, system spec, port allocation, Docker pull/up stdout/stderr, and container diagnostic trace to `ente-installer.log` for instant auditing and troubleshooting.
 
@@ -355,6 +356,13 @@ Refresh your web gallery tab and open **Settings** $\rightarrow$ **Account**: yo
 
 > [!IMPORTANT]
 > The official Ente mobile apps (iOS & Android) **strictly require a valid, publicly trusted HTTPS (TLS) certificate**. They reject plain `http://` and self-signed certificates.
+
+> [!TIP]
+> **One-Command Migration Utility:** If you already deployed Ente and want to switch from `localhost` to a private LAN IP, or from LAN to a public domain (Cloudflare Tunnel or Caddy), run the reconfiguration helper:
+> ```bash
+> ./reconfigure.sh
+> ```
+> It preserves all your passwords, updates endpoints, and reloads Docker automatically with zero data loss.
 
 ### Method A: Cloudflare Zero Trust Tunnel (Easiest, Zero Port Forwarding)
 If you already use Cloudflare:

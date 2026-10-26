@@ -316,6 +316,28 @@ configure_topology() {
     read -rp "Enter target installation folder [default: ${DEFAULT_DIR}]: " USER_DIR
     TARGET_DIR="${USER_DIR:-$DEFAULT_DIR}"
     TARGET_DIR="${TARGET_DIR/#\~/$HOME}" # Expand tilde if typed
+
+    # Safe Guard: Explicitly warn user if an existing active installation is detected
+    if [ -f "$TARGET_DIR/credentials.env" ] && [ -f "$TARGET_DIR/compose.yaml" ]; then
+        echo -e "\n${YELLOW}${BOLD}════════════════════════════════════════════════════════════════════════${NC}"
+        echo -e "${YELLOW}${BOLD}      ⚠ WARNING: EXISTING ENTE DEPLOYMENT DETECTED!                    ${NC}"
+        echo -e "${YELLOW}${BOLD}════════════════════════════════════════════════════════════════════════${NC}"
+        echo -e "An active Ente deployment is already configured in: ${CYAN}${TARGET_DIR}${NC}\n"
+        echo -e "Running a fresh install will regenerate passwords and reset configurations,"
+        echo -e "which may lock you out of your existing database or break active connections.\n"
+        echo -e "  ${BOLD}[1] Abort & Run Reconfigure Tool${NC} (Recommended to change IP, domain, or reverse proxy)"
+        echo -e "  ${BOLD}[2] Wipe & Reinstall Cleanly${NC} (Backs up old data and starts completely fresh)"
+        read -rp "Select an option [1/2, default: 1]: " EXIST_CHOICE
+        EXIST_CHOICE=${EXIST_CHOICE:-1}
+        if [ "$EXIST_CHOICE" -ne 2 ]; then
+            log_info "Aborting installation safely."
+            echo -e "To change your IP, domain, or proxy settings without losing data, run:\n"
+            echo -e "  ${CYAN}cd ${TARGET_DIR} && ./reconfigure.sh${NC}\n"
+            exit 0
+        fi
+        log_warn "Proceeding with fresh installation. Old database files will be safely archived."
+    fi
+
     mkdir -p "$TARGET_DIR/data" "$TARGET_DIR/minio_data" "$TARGET_DIR/reverse-proxy"
 
     # Edge-Case Protection: Prevent PostgreSQL password mismatch / dirty migration locks from previous runs
@@ -811,6 +833,15 @@ echo "Quota updated successfully! Refresh your Ente gallery tab."
 EOF
     chmod +x "$TARGET_DIR/set-quota.sh"
 
+    # Helper 3: Copy reconfigure.sh
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -f "$script_dir/reconfigure.sh" ]; then
+        cp "$script_dir/reconfigure.sh" "$TARGET_DIR/reconfigure.sh"
+        chmod +x "$TARGET_DIR/reconfigure.sh"
+        log_success "Companion tool reconfigure.sh deployed to: $TARGET_DIR"
+    fi
+
     # Background Watcher: Auto-Upgrade First Account to 10 TB upon sign-up (1-hour window)
     cat <<'EOF' > "$TARGET_DIR/.auto-quota-daemon.sh"
 #!/usr/bin/env bash
@@ -873,6 +904,10 @@ print_summary() {
     echo -e "  • On the welcome screen, ${BOLD}tap the Ente logo 7 times${NC} to reveal custom server settings."
     echo -e "  • Enter your Core API endpoint: ${CYAN}${API_ORIGIN}${NC}"
     echo -e "    ${YELLOW}(Note: Mobile apps strictly require HTTPS / valid SSL certificates)${NC}"
+    echo -e ""
+    echo -e "${BOLD}▶ Changing IP / Domain Later:${NC}"
+    echo -e "  • If your server IP changes or you add a domain later, safely reconfigure anytime with:"
+    echo -e "     ${YELLOW}cd ${TARGET_DIR} && ./reconfigure.sh${NC}"
     echo -e ""
     if [ "$MODE" = "DOMAIN" ]; then
         echo -e "${BOLD}▶ Reverse Proxy Templates:${NC}"

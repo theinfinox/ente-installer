@@ -40,8 +40,16 @@ def assert_test(name, condition, details=""):
 
 def run_bash_code(code):
     bash_path = r"C:\Program Files\Git\bin\bash.exe"
-    proc = subprocess.run([bash_path, "-c", code], capture_output=True, text=True)
-    return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+    proc = subprocess.run(
+        [bash_path, "-c", code],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace"
+    )
+    stdout = proc.stdout.strip() if proc.stdout else ""
+    stderr = proc.stderr.strip() if proc.stderr else ""
+    return proc.returncode, stdout, stderr
 
 def main():
     # Set utf-8 stdout encoding for Windows compatibility
@@ -227,6 +235,81 @@ echo "$clean_msg"
 """
     code, out, err = run_bash_code(ansi_test)
     assert_test("ANSI codes stripped cleanly from log messages", out == "[OK] Success! Warning", f"Got '{out}'")
+
+    # -------------------------------------------------------------------------
+    # Test 7: Reconfiguration Utility (reconfigure.sh)
+    # -------------------------------------------------------------------------
+    print(f"\n{CYAN}--> Validating Reconfiguration Utility (reconfigure.sh):{RESET}")
+    reconfig_path = os.path.join(repo_root, "reconfigure.sh")
+    assert_test("reconfigure.sh file exists", os.path.exists(reconfig_path))
+    code, out, err = run_bash_code(f"bash -n '{reconfig_path}'")
+    assert_test("reconfigure.sh passes bash syntax check", code == 0, err)
+
+    # Test dry-run reconfiguration on a simulated active deployment
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create mock credentials.env
+        orig_pg_pass = "SuperSecretDbPassword9988"
+        with open(os.path.join(temp_dir, "credentials.env"), "w") as f:
+            f.write(f"""PG_USER=pguser
+PG_PASSWORD={orig_pg_pass}
+PG_DB=ente_db
+MINIO_ROOT_USER=minio-user-test
+MINIO_ROOT_PASSWORD=minio-pass-test
+MUSEUM_KEY_ENC=YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY=
+MUSEUM_KEY_HASH=YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTZBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWjEyMzQ1Ng==
+MUSEUM_JWT_SECRET=dGVzdC1qd3Qtc2VjcmV0LTEyMzQ1Njc4OTA=
+WEB_ORIGIN=http://127.0.0.1:3000
+API_ORIGIN=http://127.0.0.1:8080
+S3_ENDPOINT=127.0.0.1:3200
+""")
+
+        # Create mock compose.yaml
+        with open(os.path.join(temp_dir, "compose.yaml"), "w") as f:
+            f.write("""services:
+  web:
+    ports:
+      - "3004:3000"
+      - "3002:3002"
+    environment:
+      ENTE_API_ORIGIN: http://127.0.0.1:8080
+  museum:
+    ports:
+      - "8080:8080"
+  minio:
+    ports:
+      - "3200:3200"
+""")
+
+        # Create mock museum.yaml
+        with open(os.path.join(temp_dir, "museum.yaml"), "w") as f:
+            f.write(f"""db:
+  host: postgres
+  password: "{orig_pg_pass}"
+s3:
+  b2-eu-cen:
+    endpoint: "127.0.0.1:3200"
+""")
+
+        # Run reconfigure.sh simulation: select option 1 (LAN mode), IP 192.168.1.99
+        reconfig_cmd = f"bash '{reconfig_path}' '{temp_dir}' --dry-run <<< $'1\\n192.168.1.99\\n'"
+        code, out, err = run_bash_code(reconfig_cmd)
+        assert_test("reconfigure.sh executed successfully in dry-run mode", code == 0, err)
+
+        # Verify that original password was preserved
+        with open(os.path.join(temp_dir, "credentials.env"), "r") as f:
+            new_creds = f.read()
+        assert_test("reconfigure.sh preserved original DB password", f"PG_PASSWORD={orig_pg_pass}" in new_creds)
+        assert_test("reconfigure.sh updated S3_ENDPOINT to new IP", "S3_ENDPOINT=192.168.1.99:3200" in new_creds)
+        assert_test("reconfigure.sh updated WEB_ORIGIN to new IP", "WEB_ORIGIN=http://192.168.1.99:3004" in new_creds)
+
+        # Verify backup files were created
+        bak_files = [fn for fn in os.listdir(temp_dir) if "bak_" in fn]
+        assert_test("reconfigure.sh created safe configuration backups", len(bak_files) >= 2, str(bak_files))
+
+        # Verify new compose.yaml is valid YAML
+        with open(os.path.join(temp_dir, "compose.yaml"), "r") as f:
+            reconfig_compose = yaml.safe_load(f)
+        assert_test("reconfigured compose.yaml is 100% valid YAML", isinstance(reconfig_compose, dict))
 
     # -------------------------------------------------------------------------
     # Final Report
