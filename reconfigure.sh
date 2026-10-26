@@ -88,11 +88,18 @@ CURRENT_WEB_ORIGIN=$(get_cred "WEB_ORIGIN")
 CURRENT_API_ORIGIN=$(get_cred "API_ORIGIN")
 CURRENT_S3_ENDPOINT=$(get_cred "S3_ENDPOINT")
 
-# Extract existing ports from compose.yaml
-WEB_PORT=$(grep -E '^[[:space:]]*-[[:space:]]*"[0-9]+:3000"' "$TARGET_DIR/compose.yaml" | sed -E 's/.*"([0-9]+):3000".*/\1/' || echo "3004")
-ALBUMS_PORT=$(grep -E '^[[:space:]]*-[[:space:]]*"[0-9]+:3002"' "$TARGET_DIR/compose.yaml" | sed -E 's/.*"([0-9]+):3002".*/\1/' || echo "3002")
-API_PORT=$(grep -E '^[[:space:]]*-[[:space:]]*"[0-9]+:8080"' "$TARGET_DIR/compose.yaml" | sed -E 's/.*"([0-9]+):8080".*/\1/' || echo "8080")
-MINIO_PORT=$(grep -E '^[[:space:]]*-[[:space:]]*"[0-9]+:3200"' "$TARGET_DIR/compose.yaml" | sed -E 's/.*"([0-9]+):3200".*/\1/' || echo "3200")
+# Extract existing ports from compose.yaml (supports both standard and loopback-bound ports)
+WEB_PORT=$(grep -E '[0-9]+:3000"' "$TARGET_DIR/compose.yaml" 2>/dev/null | sed -E 's/.*[^0-9]([0-9]+):3000".*/\1/' | head -n1)
+WEB_PORT=${WEB_PORT:-3004}
+
+ALBUMS_PORT=$(grep -E '[0-9]+:3002"' "$TARGET_DIR/compose.yaml" 2>/dev/null | sed -E 's/.*[^0-9]([0-9]+):3002".*/\1/' | head -n1)
+ALBUMS_PORT=${ALBUMS_PORT:-3002}
+
+API_PORT=$(grep -E '[0-9]+:8080"' "$TARGET_DIR/compose.yaml" 2>/dev/null | sed -E 's/.*[^0-9]([0-9]+):8080".*/\1/' | head -n1)
+API_PORT=${API_PORT:-8080}
+
+MINIO_PORT=$(grep -E '[0-9]+:3200"' "$TARGET_DIR/compose.yaml" 2>/dev/null | sed -E 's/.*[^0-9]([0-9]+):3200".*/\1/' | head -n1)
+MINIO_PORT=${MINIO_PORT:-3200}
 
 echo -e "\n${BOLD}Current Configuration:${NC}"
 echo -e "  • Web Gallery Origin:  ${CYAN}${CURRENT_WEB_ORIGIN}${NC}"
@@ -102,6 +109,8 @@ echo -e "  • Allocated Ports:     Web:${WEB_PORT}, API:${API_PORT}, S3:${MINIO
 
 # 3. Interactive Topology Selection
 AUTO_LAN_IP=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7}' || hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")
+AUTO_LAN_IP="${AUTO_LAN_IP:-127.0.0.1}"
+AUTO_LAN_IP=$(echo "$AUTO_LAN_IP" | tr -d '[:space:]')
 
 echo -e "\n${BOLD}Select new network access mode:${NC}"
 echo -e "  ${BOLD}[1] Local Network / Private IP${NC} (Switch to LAN IP: ${AUTO_LAN_IP})"
@@ -116,10 +125,12 @@ if [ "$NET_CHOICE" -eq 3 ]; then
 elif [ "$NET_CHOICE" -eq 2 ]; then
     MODE="DOMAIN"
     read -rp "Enter your primary root domain for Ente (e.g., example.com): " ROOT_DOMAIN
-    ROOT_DOMAIN=$(echo "$ROOT_DOMAIN" | tr -d '[:space:]')
+    ROOT_DOMAIN=$(echo "$ROOT_DOMAIN" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
     ROOT_DOMAIN=${ROOT_DOMAIN#https://}
     ROOT_DOMAIN=${ROOT_DOMAIN#http://}
     ROOT_DOMAIN=${ROOT_DOMAIN%/}
+    ROOT_DOMAIN=${ROOT_DOMAIN#.}
+    ROOT_DOMAIN=${ROOT_DOMAIN%.}
 
     WEB_DOMAIN="photos.${ROOT_DOMAIN}"
     API_DOMAIN="api.${ROOT_DOMAIN}"
@@ -135,17 +146,17 @@ elif [ "$NET_CHOICE" -eq 2 ]; then
         read -rp "Enter full Web Gallery URL (e.g. photos.myphotos.com): " WEB_DOMAIN
         read -rp "Enter full Core API URL (e.g. api.myphotos.com): " API_DOMAIN
         read -rp "Enter full S3 Storage URL/Host (e.g. s3.myphotos.com): " S3_DOMAIN
-        WEB_DOMAIN=$(echo "$WEB_DOMAIN" | tr -d '[:space:]')
+        WEB_DOMAIN=$(echo "$WEB_DOMAIN" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
         WEB_DOMAIN=${WEB_DOMAIN#https://}
         WEB_DOMAIN=${WEB_DOMAIN#http://}
         WEB_DOMAIN=${WEB_DOMAIN%/}
 
-        API_DOMAIN=$(echo "$API_DOMAIN" | tr -d '[:space:]')
+        API_DOMAIN=$(echo "$API_DOMAIN" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
         API_DOMAIN=${API_DOMAIN#https://}
         API_DOMAIN=${API_DOMAIN#http://}
         API_DOMAIN=${API_DOMAIN%/}
 
-        S3_DOMAIN=$(echo "$S3_DOMAIN" | tr -d '[:space:]')
+        S3_DOMAIN=$(echo "$S3_DOMAIN" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
         S3_DOMAIN=${S3_DOMAIN#https://}
         S3_DOMAIN=${S3_DOMAIN#http://}
         S3_DOMAIN=${S3_DOMAIN%/}
@@ -186,6 +197,7 @@ else
     read -rp "Enter your server's reachable LAN IP [default: ${AUTO_LAN_IP}]: " INPUT_IP
     SERVER_IP="${INPUT_IP:-$AUTO_LAN_IP}"
     SERVER_IP=$(echo "$SERVER_IP" | tr -d '[:space:]')
+    SERVER_IP="${SERVER_IP:-127.0.0.1}"
 
     if [ "$SERVER_IP" = "127.0.0.1" ] || [ "$SERVER_IP" = "localhost" ]; then
         echo -e "${YELLOW}[⚠ WARNING] You selected loopback '${SERVER_IP}'. External phones cannot upload to 127.0.0.1.${NC}"

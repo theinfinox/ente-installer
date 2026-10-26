@@ -237,15 +237,19 @@ echo "$BYTES"
         ("https://photos.example.com/", "photos.example.com"),
         ("http://example.org/ ", "example.org"),
         ("  sub.domain.io  ", "sub.domain.io"),
-        ("photos.ente.cloud", "photos.ente.cloud")
+        ("photos.ente.cloud", "photos.ente.cloud"),
+        ("  HTTPS://Photos.Example.Com/  ", "photos.example.com"),
+        ("  .example.org.  ", "example.org")
     ]
     for raw_domain, expected_domain in test_domains:
         bash_sanitizer = f"""
 ROOT_DOMAIN="{raw_domain}"
-ROOT_DOMAIN=$(echo "$ROOT_DOMAIN" | tr -d '[:space:]')
+ROOT_DOMAIN=$(echo "$ROOT_DOMAIN" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
 ROOT_DOMAIN=${{ROOT_DOMAIN#https://}}
 ROOT_DOMAIN=${{ROOT_DOMAIN#http://}}
 ROOT_DOMAIN=${{ROOT_DOMAIN%/}}
+ROOT_DOMAIN=${{ROOT_DOMAIN#.}}
+ROOT_DOMAIN=${{ROOT_DOMAIN%.}}
 echo "$ROOT_DOMAIN"
 """
         code, out, err = run_bash_code(bash_sanitizer)
@@ -400,6 +404,89 @@ s3:
         assert_test("Domain Mode bound museum port to 127.0.0.1:8080:8080", "127.0.0.1:8080:8080" in museum_ports_domain)
         assert_test("Domain Mode generated Caddyfile reverse proxy snippet", os.path.exists(os.path.join(temp_dir_domain, "reverse-proxy", "Caddyfile.snippet")))
         assert_test("Domain Mode generated Cloudflare Tunnel ingress guide", os.path.exists(os.path.join(temp_dir_domain, "reverse-proxy", "cloudflare-tunnel.md")))
+
+    # -------------------------------------------------------------------------
+    # Test 8: Bare-Minimum System Resilience & Edge-Case Suite
+    # -------------------------------------------------------------------------
+    print(f"\n{CYAN}--> Validating Bare-Minimum System Resilience & Edge Cases:{RESET}")
+
+    # 8.1 Memory calculation fallback (empty /proc/meminfo)
+    mem_test = """
+set -eo pipefail
+AVAILABLE_RAM_KB=""
+AVAILABLE_RAM_KB=${AVAILABLE_RAM_KB:-2048000}
+if [[ ! "$AVAILABLE_RAM_KB" =~ ^[0-9]+$ ]]; then
+    AVAILABLE_RAM_KB=2048000
+fi
+AVAILABLE_RAM_MB=$(( AVAILABLE_RAM_KB / 1024 ))
+echo "$AVAILABLE_RAM_MB"
+"""
+    code, out, err = run_bash_code(mem_test)
+    assert_test("Memory math safely falls back on bare/empty /proc/meminfo without crash", out == "2000" and code == 0, f"Got '{out}'")
+
+    # 8.2 Disk space calculation fallback (multiline wrapping / missing output)
+    disk_test = """
+set -eo pipefail
+AVAILABLE_DISK_KB=""
+AVAILABLE_DISK_KB=${AVAILABLE_DISK_KB:-10485760}
+if [[ ! "$AVAILABLE_DISK_KB" =~ ^[0-9]+$ ]]; then
+    AVAILABLE_DISK_KB=10485760
+fi
+AVAILABLE_DISK_MB=$(( AVAILABLE_DISK_KB / 1024 ))
+echo "$AVAILABLE_DISK_MB"
+"""
+    code, out, err = run_bash_code(disk_test)
+    assert_test("Disk space math safely falls back on wrapped df output without crash", out == "10240" and code == 0, f"Got '{out}'")
+
+    # 8.3 Port extraction regex across isolated, standard, and custom ports in compose.yaml
+    port_tests = [
+        ('      - "3004:3000"', "3000", "3004"),
+        ('      - "127.0.0.1:3004:3000"', "3000", "3004"),
+        ('      - "127.0.0.1:3088:3000"', "3000", "3088"),
+        ('      - "0.0.0.0:3090:3000"', "3000", "3090"),
+        ('      - "127.0.0.1:8090:8080"', "8080", "8090"),
+        ('      - "127.0.0.1:3220:3200"', "3200", "3220"),
+    ]
+    for line_snippet, target_internal_port, expected_host_port in port_tests:
+        extract_script = f"""
+line='{line_snippet}'
+port=$(echo "$line" | sed -E 's/.*[^0-9]([0-9]+):{target_internal_port}".*/\\1/' | head -n1)
+echo "$port"
+"""
+        code, out, err = run_bash_code(extract_script)
+        assert_test(f"Port regex extracts {expected_host_port} from '{line_snippet.strip()}'", out == expected_host_port, f"Got '{out}'")
+
+    # 8.4 Network IP fallback on airgapped/minimal systems
+    ip_fallback_test = """
+set -eo pipefail
+AUTO_LAN_IP=""
+AUTO_LAN_IP="${AUTO_LAN_IP:-127.0.0.1}"
+SERVER_IP="${INPUT_IP:-$AUTO_LAN_IP}"
+SERVER_IP="${SERVER_IP:-127.0.0.1}"
+echo "$SERVER_IP"
+"""
+    code, out, err = run_bash_code(ip_fallback_test)
+    assert_test("LAN IP discovery falls back to 127.0.0.1 when network tools return empty", out == "127.0.0.1" and code == 0, f"Got '{out}'")
+
+    # 8.5 Auto-quota daemon resilience against dirty psql outputs
+    daemon_resilience_test = """
+set -eo pipefail
+USER_ID="psql: error: could not connect to server"
+USER_ID=$(echo "$USER_ID" | tr -d '[:space:]')
+if [[ "$USER_ID" =~ ^[0-9]+$ ]] && [ "$USER_ID" -gt 0 ] 2>/dev/null; then
+    echo "PROCEEDED"
+else
+    echo "SAFELY_IGNORED"
+fi
+"""
+    code, out, err = run_bash_code(daemon_resilience_test)
+    assert_test("Auto-quota daemon ignores non-numeric psql connection error cleanly", out == "SAFELY_IGNORED" and code == 0, f"Got '{out}'")
+
+    # 8.6 Multi-package manager detection presence in install.sh
+    assert_test("install.sh supports dnf package manager", "dnf install" in content)
+    assert_test("install.sh supports pacman package manager", "pacman -Sy" in content)
+    assert_test("install.sh supports apk package manager", "apk add" in content)
+    assert_test("install.sh supports zypper package manager", "zypper install" in content)
 
     # -------------------------------------------------------------------------
     # Final Report

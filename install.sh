@@ -135,8 +135,11 @@ preflight_audit() {
     if [ "$EUID" -eq 0 ]; then
         log_warn "Running as root user. It is recommended to run this script as a normal user with sudo privileges."
         SUDO_CMD=""
-    else
+    elif command -v sudo >/dev/null 2>&1; then
         SUDO_CMD="sudo"
+    else
+        SUDO_CMD=""
+        log_warn "Running as non-root user without sudo. Package installation commands will be skipped if privileges are required."
     fi
 
     # 3. Check / Install Core Utilities
@@ -148,8 +151,20 @@ preflight_audit() {
     done
 
     if [ -n "$NEEDED_TOOLS" ]; then
-        log_info "Installing missing utilities:$NEEDED_TOOLS"
-        $SUDO_CMD apt-get update -qq && $SUDO_CMD apt-get install -y -qq $NEEDED_TOOLS || true
+        log_info "Attempting to install missing utilities:$NEEDED_TOOLS"
+        if command -v apt-get >/dev/null 2>&1; then
+            $SUDO_CMD apt-get update -qq && $SUDO_CMD apt-get install -y -qq $NEEDED_TOOLS || true
+        elif command -v dnf >/dev/null 2>&1; then
+            $SUDO_CMD dnf install -y -q $NEEDED_TOOLS || true
+        elif command -v yum >/dev/null 2>&1; then
+            $SUDO_CMD yum install -y -q $NEEDED_TOOLS || true
+        elif command -v pacman >/dev/null 2>&1; then
+            $SUDO_CMD pacman -Sy --noconfirm $NEEDED_TOOLS || true
+        elif command -v apk >/dev/null 2>&1; then
+            $SUDO_CMD apk add --no-cache $NEEDED_TOOLS || true
+        elif command -v zypper >/dev/null 2>&1; then
+            $SUDO_CMD zypper install -y $NEEDED_TOOLS || true
+        fi
     fi
 
     # 4. Check Docker & Compose
@@ -165,7 +180,7 @@ preflight_audit() {
             elif [ "$EUID" -ne 0 ]; then
                 $SUDO_CMD usermod -aG docker "$USER" || true
             fi
-            $SUDO_CMD systemctl enable --now docker || true
+            $SUDO_CMD systemctl enable --now docker 2>/dev/null || $SUDO_CMD service docker start 2>/dev/null || true
             log_success "Docker installed successfully."
         else
             log_error "Docker is required to run Ente. Please install Docker and re-run this script."
@@ -192,8 +207,15 @@ preflight_audit() {
     COMPOSE_VERSION=$($DOCKER_PREFIX docker compose version --short 2>/dev/null || echo "0.0.0")
     log_success "Docker Compose version: $COMPOSE_VERSION"
 
-    # 5. Memory Check
-    AVAILABLE_RAM_KB=$(grep MemAvailable /proc/meminfo 2>/dev/null | awk '{print $2}' || echo "2000000")
+    # 5. Memory Check (Guarded against minimal containers / older kernels)
+    AVAILABLE_RAM_KB=$(grep MemAvailable /proc/meminfo 2>/dev/null | awk '{print $2}' || true)
+    if [ -z "$AVAILABLE_RAM_KB" ]; then
+        AVAILABLE_RAM_KB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || true)
+    fi
+    AVAILABLE_RAM_KB=${AVAILABLE_RAM_KB:-2048000}
+    if [[ ! "$AVAILABLE_RAM_KB" =~ ^[0-9]+$ ]]; then
+        AVAILABLE_RAM_KB=2048000
+    fi
     AVAILABLE_RAM_MB=$(( AVAILABLE_RAM_KB / 1024 ))
     if [ "$AVAILABLE_RAM_MB" -lt 800 ]; then
         log_warn "Low available memory: ${AVAILABLE_RAM_MB} MB. Ente recommends at least 1 GB RAM."
@@ -201,8 +223,12 @@ preflight_audit() {
         log_success "Memory: ${AVAILABLE_RAM_MB} MB available (Adequate)"
     fi
 
-    # 6. Disk Space Check
-    AVAILABLE_DISK_KB=$(df -k "$HOME" 2>/dev/null | awk 'NR==2 {print $4}' || echo "10000000")
+    # 6. Disk Space Check (POSIX -P format avoids multiline wrapping)
+    AVAILABLE_DISK_KB=$(df -k -P "$HOME" 2>/dev/null | awk 'NR==2 {print $4}' || true)
+    AVAILABLE_DISK_KB=${AVAILABLE_DISK_KB:-10485760}
+    if [[ ! "$AVAILABLE_DISK_KB" =~ ^[0-9]+$ ]]; then
+        AVAILABLE_DISK_KB=10485760
+    fi
     AVAILABLE_DISK_MB=$(( AVAILABLE_DISK_KB / 1024 ))
     if [ "$AVAILABLE_DISK_MB" -lt 3000 ]; then
         log_warn "Low available disk space: ${AVAILABLE_DISK_MB} MB. Ente container images and database require at least 3-5 GB free."
@@ -237,10 +263,22 @@ preflight_audit() {
 # ------------------------------------------------------------------------------
 is_port_free() {
     local port=$1
+    # 1. Check Docker publishing ports
+    if command -v docker >/dev/null 2>&1; then
+        if $DOCKER_PREFIX docker ps --format '{{.Ports}}' 2>/dev/null | grep -Eq "(:|^)${port}->"; then
+            return 1
+        fi
+    fi
+
+    # 2. Check host socket listeners
     if command -v ss >/dev/null 2>&1; then
-        ! ss -tulpn | grep -q ":${port}\b"
+        ! ss -tulpn 2>/dev/null | grep -Eq ":${port}(\s|$)"
+    elif command -v netstat >/dev/null 2>&1; then
+        ! netstat -tulpn 2>/dev/null | grep -Eq ":${port}(\s|$)"
     elif command -v lsof >/dev/null 2>&1; then
         ! lsof -i ":${port}" >/dev/null 2>&1
+    elif command -v nc >/dev/null 2>&1; then
+        ! nc -z -w 1 127.0.0.1 "$port" 2>/dev/null
     else
         ! (bash -c "exec 3<>/dev/tcp/127.0.0.1/${port}") 2>/dev/null
     fi
@@ -341,6 +379,7 @@ configure_topology() {
     mkdir -p "$TARGET_DIR/data" "$TARGET_DIR/minio_data" "$TARGET_DIR/reverse-proxy"
 
     # Edge-Case Protection: Prevent PostgreSQL password mismatch / dirty migration locks from previous runs
+    PRESERVE_EXISTING_SECRETS=false
     if [ -d "$TARGET_DIR/pg_data" ] && [ -n "$(ls -A "$TARGET_DIR/pg_data" 2>/dev/null)" ]; then
         log_warn "Detected existing database files in $TARGET_DIR/pg_data."
         echo -e "  If this is from a previous failed setup, old passwords or dirty migrations will block startup."
@@ -355,6 +394,10 @@ configure_topology() {
             log_success "Old database backed up safely. Fresh database initialization guaranteed."
         else
             log_info "Preserving existing pg_data directory."
+            if [ -f "$TARGET_DIR/credentials.env" ]; then
+                PRESERVE_EXISTING_SECRETS=true
+                log_info "Found existing credentials.env; will reuse database passwords to preserve database access."
+            fi
         fi
     else
         mkdir -p "$TARGET_DIR/pg_data"
@@ -372,6 +415,8 @@ configure_topology() {
 
     # 2. Network Topology Selection
     AUTO_LAN_IP=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7}' || hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")
+    AUTO_LAN_IP="${AUTO_LAN_IP:-127.0.0.1}"
+    AUTO_LAN_IP=$(echo "$AUTO_LAN_IP" | tr -d '[:space:]')
 
     echo -e "\nChoose how you plan to access your Ente instance:"
     echo -e "  ${BOLD}[1] Local Network / Private Homelab${NC} (IP: ${AUTO_LAN_IP})"
@@ -382,10 +427,12 @@ configure_topology() {
     if [ "$NET_CHOICE" -eq 2 ]; then
         MODE="DOMAIN"
         read -rp "Enter your primary root domain for Ente (e.g., example.com): " ROOT_DOMAIN
-        ROOT_DOMAIN=$(echo "$ROOT_DOMAIN" | tr -d '[:space:]')
+        ROOT_DOMAIN=$(echo "$ROOT_DOMAIN" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
         ROOT_DOMAIN=${ROOT_DOMAIN#https://}
         ROOT_DOMAIN=${ROOT_DOMAIN#http://}
         ROOT_DOMAIN=${ROOT_DOMAIN%/}
+        ROOT_DOMAIN=${ROOT_DOMAIN#.}
+        ROOT_DOMAIN=${ROOT_DOMAIN%.}
 
         WEB_DOMAIN="photos.${ROOT_DOMAIN}"
         API_DOMAIN="api.${ROOT_DOMAIN}"
@@ -401,17 +448,17 @@ configure_topology() {
             read -rp "Enter full Web Gallery URL (e.g. https://gallery.myphotos.com): " WEB_DOMAIN
             read -rp "Enter full Core API URL (e.g. https://ente-api.myphotos.com): " API_DOMAIN
             read -rp "Enter full S3 Storage URL/Host (e.g. s3.myphotos.com): " S3_DOMAIN
-            WEB_DOMAIN=$(echo "$WEB_DOMAIN" | tr -d '[:space:]')
+            WEB_DOMAIN=$(echo "$WEB_DOMAIN" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
             WEB_DOMAIN=${WEB_DOMAIN#https://}
             WEB_DOMAIN=${WEB_DOMAIN#http://}
             WEB_DOMAIN=${WEB_DOMAIN%/}
 
-            API_DOMAIN=$(echo "$API_DOMAIN" | tr -d '[:space:]')
+            API_DOMAIN=$(echo "$API_DOMAIN" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
             API_DOMAIN=${API_DOMAIN#https://}
             API_DOMAIN=${API_DOMAIN#http://}
             API_DOMAIN=${API_DOMAIN%/}
 
-            S3_DOMAIN=$(echo "$S3_DOMAIN" | tr -d '[:space:]')
+            S3_DOMAIN=$(echo "$S3_DOMAIN" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
             S3_DOMAIN=${S3_DOMAIN#https://}
             S3_DOMAIN=${S3_DOMAIN#http://}
             S3_DOMAIN=${S3_DOMAIN%/}
@@ -452,6 +499,7 @@ configure_topology() {
         read -rp "Enter your server's reachable LAN IP [default: ${AUTO_LAN_IP}]: " INPUT_IP
         SERVER_IP="${INPUT_IP:-$AUTO_LAN_IP}"
         SERVER_IP=$(echo "$SERVER_IP" | tr -d '[:space:]')
+        SERVER_IP="${SERVER_IP:-127.0.0.1}"
 
         if [ "$SERVER_IP" = "127.0.0.1" ] || [ "$SERVER_IP" = "localhost" ]; then
             log_warn "You entered loopback address '${SERVER_IP}'."
@@ -476,12 +524,22 @@ configure_topology() {
 generate_secrets() {
     log_step "Step 4: Generating Cryptographic Secrets"
 
-    PG_PASS=$(head -c 24 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9')
-    MINIO_USER="minio-user-$(head -c 8 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9')"
-    MINIO_PASS=$(head -c 24 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9')
-    KEY_ENC=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
-    KEY_HASH=$(head -c 64 /dev/urandom | base64 | tr -d '\n')
-    JWT_SECRET=$(head -c 32 /dev/urandom | base64 | tr -d '\n' | tr '+/' '-_')
+    if [ "$PRESERVE_EXISTING_SECRETS" = true ] && [ -f "$TARGET_DIR/credentials.env" ]; then
+        log_info "Reusing existing credentials from $TARGET_DIR/credentials.env to preserve database authentication..."
+        PG_PASS=$(grep "^PG_PASSWORD=" "$TARGET_DIR/credentials.env" | cut -d'=' -f2- | tr -d '\r\n')
+        MINIO_USER=$(grep "^MINIO_ROOT_USER=" "$TARGET_DIR/credentials.env" | cut -d'=' -f2- | tr -d '\r\n')
+        MINIO_PASS=$(grep "^MINIO_ROOT_PASSWORD=" "$TARGET_DIR/credentials.env" | cut -d'=' -f2- | tr -d '\r\n')
+        KEY_ENC=$(grep "^MUSEUM_KEY_ENC=" "$TARGET_DIR/credentials.env" | cut -d'=' -f2- | tr -d '\r\n')
+        KEY_HASH=$(grep "^MUSEUM_KEY_HASH=" "$TARGET_DIR/credentials.env" | cut -d'=' -f2- | tr -d '\r\n')
+        JWT_SECRET=$(grep "^MUSEUM_JWT_SECRET=" "$TARGET_DIR/credentials.env" | cut -d'=' -f2- | tr -d '\r\n')
+    else
+        PG_PASS=$(head -c 24 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9')
+        MINIO_USER="minio-user-$(head -c 8 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9')"
+        MINIO_PASS=$(head -c 24 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9')
+        KEY_ENC=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
+        KEY_HASH=$(head -c 64 /dev/urandom | base64 | tr -d '\n')
+        JWT_SECRET=$(head -c 32 /dev/urandom | base64 | tr -d '\n' | tr '+/' '-_')
+    fi
 
     # Save credentials securely
     cat <<EOF > "$TARGET_DIR/credentials.env"
@@ -736,6 +794,18 @@ launch_and_verify() {
         exit 1
     fi
 
+    # Watchdog 1.5: Verify S3 storage buckets exist (safeguard for Docker Compose < v2.28)
+    local b_retries=0
+    while [ $b_retries -lt 30 ]; do
+        if $DOCKER_PREFIX docker exec ente-minio sh -c \
+           'mc alias set h0 http://localhost:3200 "'"$MINIO_USER"'" "'"$MINIO_PASS"'" >/dev/null 2>&1 && \
+            mc mb -p b2-eu-cen wasabi-eu-central-2-v3 scw-eu-fr-v3 >/dev/null 2>&1' 2>/dev/null; then
+            break
+        fi
+        sleep 1
+        b_retries=$((b_retries + 1))
+    done
+
     # Watchdog 2: Monitor Museum schema migrations until lift-off
     echo -ne "${BLUE}[INFO]${NC} Applying database schema migrations (~151 steps)..."
     local m_elapsed=0
@@ -778,7 +848,7 @@ launch_and_verify() {
 
         if [ $lift_off -eq 0 ]; then
             log_warn "Verifying ping endpoint..."
-            if curl -fsSL "http://localhost:${API_PORT}/ping" >/dev/null 2>&1; then
+            if curl -fsSL "http://127.0.0.1:${API_PORT}/ping" >/dev/null 2>&1 || wget -q -O - "http://127.0.0.1:${API_PORT}/ping" >/dev/null 2>&1; then
                 log_success "API responded with pong! Continuing..."
             else
                 log_error "Museum server failed to start."
@@ -885,7 +955,8 @@ for i in $(seq 1 720); do
     # Check directly in subscriptions table where storage is still at default (10 GB)
     USER_ID=$($DOCKER_BIN exec -i ente-postgres psql -U pguser -d ente_db -tAc \
       "SELECT user_id FROM subscriptions WHERE storage < 10995116277760 LIMIT 1;" 2>/dev/null || true)
-    if [ -n "$USER_ID" ] && [ "$USER_ID" -gt 0 ] 2>/dev/null; then
+    USER_ID=$(echo "$USER_ID" | tr -d '[:space:]')
+    if [[ "$USER_ID" =~ ^[0-9]+$ ]] && [ "$USER_ID" -gt 0 ] 2>/dev/null; then
         # Upgrade to 10 TB (10995116277760 bytes)
         $DOCKER_BIN exec -i ente-postgres psql -U pguser -d ente_db -c \
           "UPDATE subscriptions SET storage = 10995116277760 WHERE user_id = $USER_ID;" >/dev/null 2>&1
@@ -958,16 +1029,26 @@ print_summary() {
 # Main Flow
 # ------------------------------------------------------------------------------
 main() {
+    # If running piped from curl/wget into bash (e.g. curl | bash), reconnect stdin to terminal if interactive
+    if [ ! -t 0 ] && [ -t 1 ] && [ -r /dev/tty ]; then
+        exec </dev/tty
+    fi
+
     DRY_RUN=false
+    UNATTENDED=false
     for arg in "$@"; do
         case "$arg" in
             --dry-run|-d)
                 DRY_RUN=true
                 ;;
+            --unattended|-y)
+                UNATTENDED=true
+                ;;
             --help|-h)
-                echo "Usage: ./install.sh [--dry-run]"
-                echo "  --dry-run, -d    Validate system, allocate ports, and generate all configs without downloading images"
-                echo "  --help, -h       Show this help message"
+                echo "Usage: ./install.sh [--dry-run] [--unattended]"
+                echo "  --dry-run, -d       Validate system, allocate ports, and generate all configs without downloading images"
+                echo "  --unattended, -y    Run non-interactively using safe defaults"
+                echo "  --help, -h          Show this help message"
                 exit 0
                 ;;
         esac
