@@ -46,19 +46,23 @@
 * [⚡ Quickest Path: The One-Command Installer (`install.sh`)](#-quickest-path-the-one-command-installer-installsh)
 * [Security & Privacy Statement](#security--privacy-statement)
 * [Safety Guarantees & Safe Execution Model](#safety-guarantees--safe-execution-model)
-* [1. Architecture & How Ente Works](#1-architecture--how-ente-works)
-* [2. Pre-Flight Verification](#2-pre-flight-verification)
-* [Step 1: Directory Setup](#step-1-directory-setup)
-* [Step 2: Automated Secret Generation](#step-2-automated-secret-generation)
-* [Step 3: Configuration Files (`museum.yaml` & `compose.yaml`)](#step-3-configuration-files)
-* [Step 4: Launching & Verifying the Stack](#step-4-launching--verifying-the-stack)
-* [Step 5: Account Creation & OTP Retrieval](#step-5-account-creation--otp-retrieval)
-* [Step 6: Unlocking 10 TB / Unlimited Storage](#step-6-unlocking-10-tb--unlimited-storage)
-* [Step 7: Remote Access & Mobile Apps (iOS / Android)](#step-7-remote-access--mobile-apps-ios--android)
-* [10. Troubleshooting & Emergency Recovery Matrix](#10-troubleshooting--emergency-recovery-matrix)
-* [11. Backup, Disaster Recovery & Maintenance Playbook](#11-backup-disaster-recovery--maintenance-playbook)
-* [12. Production Security Hardening & LTS Best Practices](#12-production-security-hardening--lts-best-practices)
-* [13. Disclaimers, Licensing & Trademark Attribution](#13-disclaimers-licensing--trademark-attribution)
+* [Architecture & How Ente Works](#architecture--how-ente-works)
+* [🛠️ Manual Step-by-Step Deployment (Alternative to `install.sh`)](#️-manual-step-by-step-deployment-alternative-to-installsh)
+  * [Step 1: Pre-Flight Verification](#step-1-pre-flight-verification)
+  * [Step 2: Directory Setup](#step-2-directory-setup)
+  * [Step 3: Automated Secret Generation](#step-3-automated-secret-generation)
+  * [Step 4: Configuration Files (`museum.yaml` & `compose.yaml`)](#step-4-configuration-files-museumyaml--composeyaml)
+  * [Step 5: Launching & Verifying the Stack](#step-5-launching--verifying-the-stack)
+  * [Step 6: Account Creation & OTP Retrieval](#step-6-account-creation--otp-retrieval)
+  * [Step 7: Unlocking 10 TB / Custom Storage Quota](#step-7-unlocking-10-tb--custom-storage-quota)
+* [Remote Access & Mobile Apps (Photos & Auth)](#remote-access--mobile-apps-photos--auth)
+  * [Method A: Cloudflare Zero Trust Tunnel](#method-a-cloudflare-zero-trust-tunnel-easiest-zero-port-forwarding)
+  * [Method B: Caddy Reverse Proxy](#method-b-caddy-reverse-proxy-automatic-lets-encrypt-ssl)
+  * [How to Connect Mobile & Desktop Apps](#how-to-connect-mobile--desktop-apps)
+* [Troubleshooting & Emergency Recovery Matrix](#troubleshooting--emergency-recovery-matrix)
+* [Backup, Disaster Recovery & Maintenance Playbook](#backup-disaster-recovery--maintenance-playbook)
+* [Production Security Hardening & LTS Best Practices](#production-security-hardening--lts-best-practices)
+* [Disclaimers, Licensing & Trademark Attribution](#disclaimers-licensing--trademark-attribution)
 
 ---
 
@@ -89,7 +93,7 @@ chmod +x install.sh
 * **Sudo-Aware Helper Tools:** Creates `./get-otp.sh`, `./set-quota.sh <SIZE>`, and `./reconfigure.sh` in your install directory, automatically detecting Docker permissions.
 * **Existing Deployment Safeguard:** If an active Ente instance is detected in the target directory, it warns you explicitly and offers to launch `./reconfigure.sh` instead of overwriting existing credentials.
 * **Reverse Proxy Snippets:** Generates ready-to-use Caddy and Cloudflare Zero Trust configurations if a domain is specified.
-* **Full Execution Timeline Logging (`ente-installer.log`):** Records every command, system spec, port allocation, Docker pull/up stdout/stderr, and container diagnostic trace to `ente-installer.log` for instant auditing and troubleshooting.
+* **Full Audit Logging:** Records every command, system metric, and container diagnostic trace to `ente-installer.log` for instant troubleshooting.
 
 ---
 
@@ -120,7 +124,7 @@ To protect your system and existing data from accidental corruption:
 
 ---
 
-## 1. Architecture & How Ente Works
+## Architecture & How Ente Works
 
 Ente is not a simple monolithic container. Understanding the data flow prevents 99% of user configuration errors:
 
@@ -146,17 +150,24 @@ Ente is not a simple monolithic container. Understanding the data flow prevents 
 
 ---
 
-## 2. Pre-Flight Verification
+## 🛠️ Manual Step-by-Step Deployment (Alternative to `install.sh`)
+
+> [!NOTE]
+> If you deployed using the **One-Command Installer (`./install.sh`)** above, all directories, secrets, configuration files, and initial quotas were already generated automatically! You can skip directly to [Remote Access & Mobile Apps](#remote-access--mobile-apps-photos--auth) or [Troubleshooting](#troubleshooting--emergency-recovery-matrix).
+>
+> The steps below are provided for users who wish to inspect the architecture or configure their stack manually by hand.
+
+### Step 1: Pre-Flight Verification
 
 Run these checks on your host system before creating files:
 
-### 1. Verify Docker & Compose Support
+#### 1. Verify Docker & Compose Support
 Ente requires Docker with Compose v2.28 or newer:
 ```bash
 docker --version && docker compose version
 ```
 
-### 2. Check for Port Collisions
+#### 2. Check for Port Collisions
 Ente uses the following ports by default. Run this command to check if any are already occupied:
 ```bash
 # Linux / macOS:
@@ -170,7 +181,7 @@ sudo lsof -i :3000,3002,3004,3200,8080
 
 ---
 
-## Step 1: Directory Setup
+### Step 2: Directory Setup
 
 Create an isolated directory structure with explicit persistent volume paths:
 
@@ -181,7 +192,7 @@ cd ~/ente
 
 ---
 
-## Step 2: Automated Secret Generation
+### Step 3: Automated Secret Generation
 
 Ente requires high-entropy cryptographic keys for database passwords, JWT tokens, and internal envelope encryption. 
 
@@ -202,9 +213,9 @@ EOF
 
 ---
 
-## Step 3: Configuration Files
+### Step 4: Configuration Files (`museum.yaml` & `compose.yaml`)
 
-### 1. `museum.yaml`
+#### 1. `museum.yaml`
 Create `~/ente/museum.yaml` with your generated keys:
 
 > [!CAUTION]
@@ -257,9 +268,7 @@ jwt:
   secret: "YOUR_JWT_SECRET"
 ```
 
----
-
-### 2. `compose.yaml`
+#### 2. `compose.yaml`
 Create `~/ente/compose.yaml`. This file incorporates a **hardened PostgreSQL healthcheck** that eliminates the fatal database migration lock:
 
 ```yaml
@@ -353,7 +362,7 @@ services:
 
 ---
 
-## Step 4: Launching & Verifying the Stack
+### Step 5: Launching & Verifying the Stack
 
 1. **Start the containers:**
    ```bash
@@ -386,7 +395,7 @@ services:
 
 ---
 
-## Step 5: Account Creation & OTP Retrieval
+### Step 6: Account Creation & OTP Retrieval
 
 1. In your browser, navigate to:
    ```text
@@ -405,7 +414,7 @@ services:
 
 ---
 
-## Step 6: Unlocking 10 TB / Unlimited Storage
+### Step 7: Unlocking 10 TB / Custom Storage Quota
 
 By default, Ente initializes accounts with a 10 GB quota in the database. Because this is your own server, you can expand this limit to whatever capacity you need (e.g., 10 TB = `10995116277760` bytes).
 
@@ -420,10 +429,10 @@ Refresh your web gallery tab and open **Settings** $\rightarrow$ **Account**: yo
 
 ---
 
-## Step 7: Remote Access & Mobile Apps (iOS / Android)
+## Remote Access & Mobile Apps (Photos & Auth)
 
 > [!IMPORTANT]
-> The official Ente mobile apps (iOS & Android) **strictly require a valid, publicly trusted HTTPS (TLS) certificate**. They reject plain `http://` and self-signed certificates.
+> The official Ente mobile and desktop apps **strictly require a valid, publicly trusted HTTPS (TLS) certificate**. They reject plain `http://` and self-signed certificates.
 
 > [!TIP]
 > **One-Command Migration Utility:** If you already deployed Ente and want to switch from `localhost` to a private LAN IP, or from LAN to a public domain (Cloudflare Tunnel or Caddy), run the reconfiguration helper:
@@ -474,8 +483,12 @@ s3.yourdomain.com {
 
 ---
 
-### How to Connect the Mobile App
-1. Install **Ente Photos** from the Apple App Store or Google Play Store.
+### How to Connect Mobile & Desktop Apps
+
+Both **Ente Photos** and **Ente Auth** share the same unified backend and user account.
+
+#### 1. Connecting Ente Photos (iOS / Android / Desktop)
+1. Install **Ente Photos** from the Apple App Store, Google Play Store, or desktop release.
 2. Open the app to the initial screen.
 3. **The Hidden Developer Menu:** Tap the **Ente logo** at the top **7 times in a row**.
 4. A hidden configuration field appears: enter your custom API endpoint:
@@ -484,9 +497,18 @@ s3.yourdomain.com {
    ```
 5. Log in with your email and master encryption password.
 
+#### 2. Connecting Ente Auth (2FA Authenticator)
+1. Install **Ente Auth** on your phone or desktop.
+2. Tap the **Ente logo** 7 times (or navigate to **Settings** $\rightarrow$ **Server**).
+3. Enter the same API endpoint:
+   ```text
+   https://api.yourdomain.com
+   ```
+4. Log in with your credentials. All two-factor authentication tokens sync with zero-knowledge end-to-end encryption to your private server.
+
 ---
 
-## 10. Troubleshooting & Emergency Recovery Matrix
+## Troubleshooting & Emergency Recovery Matrix
 
 > [!TIP]
 > **Automated Execution Timeline:** If you deployed via `install.sh` and encountered an error or unexpected behavior, inspect the installer log:
@@ -510,7 +532,7 @@ s3.yourdomain.com {
 
 ---
 
-## 11. Backup, Disaster Recovery & Maintenance Playbook
+## Backup, Disaster Recovery & Maintenance Playbook
 
 ### Backing Up Ente
 To create a complete, consistent backup of your entire instance:
@@ -557,7 +579,7 @@ Docker will recreate only the updated containers while preserving all persistent
 
 ---
 
-## 12. Production Security Hardening & LTS Best Practices
+## Production Security Hardening & LTS Best Practices
 
 ### 1. File Permission Lockdown (`chmod 600`)
 `museum.yaml` and `credentials.env` contain your PostgreSQL database password, MinIO storage keys, encryption keys, and JWT secret. On shared or multi-user Linux machines, lock down these files to prevent unauthorized local reading:
@@ -594,7 +616,7 @@ ports:
 
 ---
 
-## 13. Disclaimers, Licensing & Trademark Attribution
+## Disclaimers, Licensing & Trademark Attribution
 
 ### Trademarks
 "Ente", the Ente logo, and related marks are trademarks of Ente Technologies Inc. This project is an independent community deployment tool intended to facilitate self-hosting of Ente's open-source server software.
@@ -605,18 +627,3 @@ ports:
 
 ### Disclaimer of Warranty
 THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
----
-
-## 13. Disclaimers, Licensing & Trademark Attribution
-
-### Trademarks
-"Ente", the Ente logo, and related marks are trademarks of Ente Technologies Inc. This project is an independent community deployment tool intended to facilitate self-hosting of Ente's open-source server software.
-
-### Software Licenses
-* **Installer & Automation Scripts:** Released under the [MIT License](LICENSE).
-* **Ente Server & Web Applications:** The core Ente software orchestrated by this script is licensed under the [GNU Affero General Public License v3.0 (AGPL-3.0)](https://github.com/ente/ente/blob/main/LICENSE) by Ente Technologies Inc.
-
-### Disclaimer of Warranty
-THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
