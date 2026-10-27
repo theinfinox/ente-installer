@@ -442,25 +442,53 @@ Refresh your web gallery tab and open **Settings** $\rightarrow$ **Account**: yo
 > It preserves all your passwords, updates endpoints, and reloads Docker automatically with zero data loss.
 
 ### Method A: Cloudflare Zero Trust Tunnel (Easiest, Zero Port Forwarding)
-If you already use Cloudflare:
-1. In your Cloudflare Zero Trust Dashboard, navigate to **Networks** $\rightarrow$ **Tunnels**.
-2. Add the following **Public Hostnames**:
-   * `photos.yourdomain.com` $\rightarrow$ Service: `HTTP://localhost:3004`
-   * `api.yourdomain.com` $\rightarrow$ Service: `HTTP://localhost:8080`
-   * `s3.yourdomain.com` $\rightarrow$ Service: `HTTP://localhost:3200`
-3. Update `compose.yaml`:
-   ```yaml
-   environment:
-     ENTE_API_ORIGIN: https://api.yourdomain.com
-   ```
-4. Update `museum.yaml`:
-   ```yaml
-   s3:
-     are_local_buckets: true
-     b2-eu-cen:
-       endpoint: "s3.yourdomain.com"
-   ```
-5. Restart: `docker compose up -d`
+
+Cloudflare Zero Trust Tunnels (`cloudflared`) allow secure public HTTPS access to your home server without opening router ports or exposing your home IP.
+
+#### 1. Ingress Hostname Routing Architecture
+In your Cloudflare Zero Trust Dashboard, navigate to **Networks** $\rightarrow$ **Tunnels**, select your tunnel, and configure the following 3 **Public Hostnames**:
+
+| Subdomain Type | Public Hostname (Example) | Service Type | URL / Port | Notes |
+| :--- | :--- | :--- | :--- | :--- |
+| **Web Gallery** | `entephotos.yourdomain.com` | `HTTP` | `localhost:3004` | Web app UI and album viewer |
+| **Core API** | `enteapi.yourdomain.com` | `HTTP` | `localhost:8080` | Museum backend API endpoint |
+| **S3 Storage** | `entes3.yourdomain.com` | `HTTP` | `localhost:3200` | Direct encrypted chunk uploads |
+
+> [!TIP]
+> Both `install.sh` and `reconfigure.sh` offer a choice between **Branded subdomains** (`entephotos`, `enteapi`, `entes3` — recommended to avoid collisions with other services) and **Generic subdomains** (`photos`, `api`, `s3`).
+
+#### 2. Critical Cloudflare Zero Trust Configuration Rules
+To ensure seamless photo syncing and avoid upload failures, configure these settings in Cloudflare:
+
+1. **Keep Cloudflare Access (Zero Trust Applications / SSO / PIN) DISABLED on API and S3:**
+   * Mobile apps (iOS & Android) and desktop sync daemons communicate directly with `enteapi` and `entes3`. They **cannot** parse browser-based OAuth/email PIN login gates.
+   * If you wish to protect the web UI with Cloudflare Access, enable it **only** on `entephotos.yourdomain.com`.
+2. **Exempt API and S3 from Bot Fight Mode & Managed WAF Challenges:**
+   * High-frequency background chunk uploads from mobile apps can be falsely flagged as automated bots if Bot Fight Mode is set to interactive JavaScript challenge.
+   * Create a WAF Skip rule for hostnames `enteapi.yourdomain.com` and `entes3.yourdomain.com`.
+3. **Allow 100MB+ Body & Chunked Transfer:**
+   * In your Cloudflare Tunnel settings for `entes3.yourdomain.com`, ensure HTTP chunked uploads and payloads up to your maximum photo/video size are permitted.
+
+#### 3. Container IPv6 Fail-Safe (`sysctls: net.ipv6.conf.all.disable_ipv6: 1`)
+When public domains are routed through Cloudflare, Cloudflare's edge DNS publishes dual-stack records (both IPv4 `A` and IPv6 `AAAA`).
+* Docker bridge networks do not provide an IPv6 default route by default.
+* During file uploads, Ente Museum calls S3 `HeadObject` on `entes3.yourdomain.com` to verify object size.
+* Without kernel hardening, Go's dual-stack dialer attempts to route via IPv6, resulting in `connect: network is unreachable` and causing uploads to fail at **99%**.
+* Both `install.sh` and `reconfigure.sh` automatically inject:
+  ```yaml
+  services:
+    museum:
+      sysctls:
+        net.ipv6.conf.all.disable_ipv6: 1
+  ```
+  This guarantees that internal container DNS requests strictly use IPv4, eliminating connection failures.
+
+#### 4. Applying with `reconfigure.sh`
+Instead of manually editing YAML files, run the reconfiguration utility:
+```bash
+./reconfigure.sh
+```
+Select **[2] Public Domain / Reverse Proxy**, enter your root domain (e.g. `yourdomain.com`), and choose whether your reverse proxy runs directly on the host or inside a Docker bridge container. All endpoints, S3 bucket regions, and sysctls will be updated in place safely.
 
 ---
 
@@ -528,6 +556,8 @@ Both **Ente Photos** and **Ente Auth** share the same unified backend and user a
 | **Museum restarts in a loop or hangs** | An interrupted migration left a "dirty" database lock (`version: X, dirty: t`). | Check lock: `docker exec -i ente-postgres psql -U pguser -d ente_db -c "SELECT version, dirty FROM schema_migrations;"`. If dirty, clear it: `docker exec -i ente-postgres psql -U pguser -d ente_db -c "UPDATE schema_migrations SET dirty = false;"` or recreate empty DB if no photos exist yet. |
 | **Web UI shows "Network Error" on login** | `ENTE_API_ORIGIN` in `compose.yaml` is misconfigured or unreachable from the client browser. | Ensure `ENTE_API_ORIGIN` points to `http://<SERVER_IP>:8080` (or `https://api.yourdomain.com`). Run `docker compose up -d web`. |
 | **Mobile app refuses to connect** | Plain HTTP or self-signed certificate used. Mobile client requires public CA TLS. | Put Cloudflare Tunnel or Caddy/Nginx with a valid Let's Encrypt certificate in front of the API. |
+| **Upload reaches 99% then flips to `Failed 1` (`OBJECT_SIZE_FETCH_FAILED`)** | Cloudflare dual-stack IPv6 DNS resolution inside Docker container lacking an IPv6 gateway (`dial tcp [2606:...]:443: connect: network is unreachable`). | Disable container IPv6 via sysctls: add `sysctls: net.ipv6.conf.all.disable_ipv6: 1` under `museum` in `compose.yaml` (handled automatically by `reconfigure.sh`). |
+| **`403 AccessDenied` or `AuthorizationHeaderMalformed` on upload commit** | S3 bucket region in `museum.yaml` does not match MinIO bucket creation region (`eu-central-2`). | Ensure all bucket entries (`b2-eu-cen`, `wasabi-eu-central-2-v3`, `scw-eu-fr-v3`) specify `region: eu-central-2` in `museum.yaml`. |
 | **Verification OTP not received in email** | SMTP email server is not configured in `museum.yaml`. | Run `docker logs --tail 50 ente-museum \| grep -i "code"` to read the OTP directly from standard output. |
 
 ---

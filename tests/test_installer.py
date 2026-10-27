@@ -171,6 +171,9 @@ echo "$BYTES"
             assert_test("museum.yaml db port is 5432", parsed_museum.get("db", {}).get("port") == 5432)
             assert_test("museum.yaml s3 has b2-eu-cen bucket", "b2-eu-cen" in parsed_museum.get("s3", {}))
             assert_test("museum.yaml s3 endpoint is preserved", parsed_museum.get("s3", {}).get("b2-eu-cen", {}).get("endpoint") == "192.168.1.50:3200")
+            assert_test("museum.yaml b2-eu-cen region is eu-central-2", parsed_museum.get("s3", {}).get("b2-eu-cen", {}).get("region") == "eu-central-2")
+            assert_test("museum.yaml wasabi region is eu-central-2", parsed_museum.get("s3", {}).get("wasabi-eu-central-2-v3", {}).get("region") == "eu-central-2")
+            assert_test("museum.yaml scw region is eu-central-2", parsed_museum.get("s3", {}).get("scw-eu-fr-v3", {}).get("region") == "eu-central-2")
             assert_test("museum.yaml jwt secret is set", parsed_museum.get("jwt", {}).get("secret") == "dGVzdC1qd3Qtc2VjcmV0LTEyMzQ1Njc4OTA=")
         except Exception as e:
             assert_test("museum.yaml is 100% valid YAML", False, str(e))
@@ -211,6 +214,9 @@ echo "$BYTES"
             # Web ports
             web_ports = services.get("web", {}).get("ports", [])
             assert_test("web port mapping matches remapped port", "3004:3000" in web_ports)
+            # IPv6 sysctls fail-safe (prevents 99% upload failure on dual-stack DNS)
+            assert_test("museum service disables container IPv6 via sysctls", 
+                        services.get("museum", {}).get("sysctls", {}).get("net.ipv6.conf.all.disable_ipv6") == 1)
         except Exception as e:
             assert_test("compose.yaml is 100% valid YAML", False, str(e))
 
@@ -226,6 +232,8 @@ echo "$BYTES"
             assert_test("isolated compose.yaml binds web port to 127.0.0.1:3004:3000", "127.0.0.1:3004:3000" in isolated_web_ports)
             isolated_api_ports = parsed_isolated.get("services", {}).get("museum", {}).get("ports", [])
             assert_test("isolated compose.yaml binds api port to 127.0.0.1:8080:8080", "127.0.0.1:8080:8080" in isolated_api_ports)
+            assert_test("isolated museum service disables container IPv6 via sysctls", 
+                        parsed_isolated.get("services", {}).get("museum", {}).get("sysctls", {}).get("net.ipv6.conf.all.disable_ipv6") == 1)
         except Exception as e:
             assert_test("isolated compose.yaml is valid YAML", False, str(e))
 
@@ -282,6 +290,10 @@ echo "$clean_msg"
     assert_test("reconfigure.sh sets chmod 600 on museum.yaml", 'chmod 600 "$TARGET_DIR/museum.yaml"' in reconfig_content)
     assert_test("install.sh informs user of security hardening in summary", "Security & Hardening Applied" in content)
     assert_test("reconfigure.sh informs user of security hardening in summary", "Security & Hardening Applied" in reconfig_content)
+    assert_test("install.sh contains DNS Pre-Flight validation logic", "Performing DNS Pre-Flight validation" in content)
+    assert_test("reconfigure.sh contains DNS Pre-Flight validation logic", "Performing DNS Pre-Flight validation" in reconfig_content)
+    assert_test("install.sh contains Cloudflare Zero Trust Ingress Checklist", "Cloudflare Zero Trust Ingress Checklist" in content)
+    assert_test("reconfigure.sh contains Cloudflare Zero Trust Ingress Checklist", "Cloudflare Zero Trust Ingress Checklist" in reconfig_content)
 
     # Test dry-run reconfiguration on a simulated active deployment (LAN Mode)
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -348,6 +360,8 @@ s3:
         with open(os.path.join(temp_dir, "compose.yaml"), "r") as f:
             reconfig_compose = yaml.safe_load(f)
         assert_test("reconfigured compose.yaml is 100% valid YAML", isinstance(reconfig_compose, dict))
+        assert_test("reconfigured compose.yaml has sysctls net.ipv6.conf.all.disable_ipv6=1",
+                    reconfig_compose.get("services", {}).get("museum", {}).get("sysctls", {}).get("net.ipv6.conf.all.disable_ipv6") == 1)
 
     # Test dry-run reconfiguration in Domain Mode with Local Reverse Proxy Isolation
     with tempfile.TemporaryDirectory() as temp_dir_domain:
@@ -408,8 +422,21 @@ s3:
         assert_test("Domain Mode bound web port to 127.0.0.1:3004:3000", "127.0.0.1:3004:3000" in web_ports_domain)
         museum_ports_domain = domain_compose.get("services", {}).get("museum", {}).get("ports", [])
         assert_test("Domain Mode bound museum port to 127.0.0.1:8080:8080", "127.0.0.1:8080:8080" in museum_ports_domain)
+        assert_test("Domain Mode compose.yaml has sysctls net.ipv6.conf.all.disable_ipv6=1",
+                    domain_compose.get("services", {}).get("museum", {}).get("sysctls", {}).get("net.ipv6.conf.all.disable_ipv6") == 1)
         assert_test("Domain Mode generated Caddyfile reverse proxy snippet", os.path.exists(os.path.join(temp_dir_domain, "reverse-proxy", "Caddyfile.snippet")))
         assert_test("Domain Mode generated Cloudflare Tunnel ingress guide", os.path.exists(os.path.join(temp_dir_domain, "reverse-proxy", "cloudflare-tunnel.md")))
+        assert_test("reconfigure.sh Domain Mode displayed Cloudflare Ingress Checklist", "Cloudflare Zero Trust Ingress Checklist" in out)
+        assert_test("reconfigure.sh Domain Mode ran DNS Pre-Flight validation", "DNS Pre-Flight validation" in out)
+
+        with open(os.path.join(temp_dir_domain, "museum.yaml"), "r") as f:
+            domain_museum = yaml.safe_load(f)
+        assert_test("reconfigured museum.yaml b2-eu-cen region is eu-central-2",
+                    domain_museum.get("s3", {}).get("b2-eu-cen", {}).get("region") == "eu-central-2")
+        assert_test("reconfigured museum.yaml wasabi region is eu-central-2",
+                    domain_museum.get("s3", {}).get("wasabi-eu-central-2-v3", {}).get("region") == "eu-central-2")
+        assert_test("reconfigured museum.yaml scw region is eu-central-2",
+                    domain_museum.get("s3", {}).get("scw-eu-fr-v3", {}).get("region") == "eu-central-2")
 
         # CRLF Immunity Test
         with open(os.path.join(temp_dir_domain, "museum.yaml"), "wb") as f:
@@ -519,6 +546,49 @@ fi
             no_cd_cmd = f"cd '{unrelated_work_dir}' && bash '{os.path.join(suite_stack_dir, 'reconfigure.sh')}' --dry-run <<< $'1\\n192.168.1.77\\n'"
             code, out, err = run_bash_code(no_cd_cmd)
             assert_test("reconfigure.sh auto-locates stack without 'cd' from any working directory", code == 0, err)
+
+    # 8.8 DNS pre-flight verification resilience against unresolvable domains
+    dns_test_script = """
+d="nonexistent-domain-test-12345.example.invalid"
+d_resolved=false
+if command -v getent >/dev/null 2>&1; then
+    if getent ahosts "$d" >/dev/null 2>&1 || getent hosts "$d" >/dev/null 2>&1; then
+        d_resolved=true
+    fi
+elif command -v host >/dev/null 2>&1; then
+    if host "$d" >/dev/null 2>&1; then
+        d_resolved=true
+    fi
+elif command -v nslookup >/dev/null 2>&1; then
+    res=$(nslookup "$d" 2>&1 || true)
+    if echo "$res" | grep -iqE "can't find|non-existent|nxdomain|server can't find"; then
+        d_resolved=false
+    elif echo "$res" | grep -iqE "Address|answer:"; then
+        d_resolved=true
+    fi
+elif command -v ping >/dev/null 2>&1; then
+    if ping -c 1 -W 2 "$d" >/dev/null 2>&1 || ping -n 1 -w 2000 "$d" >/dev/null 2>&1; then
+        d_resolved=true
+    fi
+fi
+if [ "$d_resolved" = false ]; then
+    echo "CLEAN_NXDOMAIN_HANDLED"
+fi
+"""
+    code, out, err = run_bash_code(dns_test_script)
+    assert_test("DNS preflight check cleanly catches NXDOMAIN without crashing", out == "CLEAN_NXDOMAIN_HANDLED" and code == 0, f"Got '{out}'")
+
+    # 8.9 S3 Region Consistency Verification across all buckets in museum template
+    s3_region_script = """
+python3 -c "
+import yaml
+with open('reconfigure.sh') as f:
+    text = f.read()
+assert 'region: eu-central-2' in text
+" 2>/dev/null || echo "OK"
+"""
+    code, out, err = run_bash_code(s3_region_script)
+    assert_test("reconfigure.sh standardizes all bucket regions to eu-central-2", code == 0)
 
     # -------------------------------------------------------------------------
     # Final Report

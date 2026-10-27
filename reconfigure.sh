@@ -240,6 +240,47 @@ elif [ "$NET_CHOICE" -eq 2 ]; then
     echo -e "  • Core API:      ${BOLD}https://${API_DOMAIN}${NC}"
     echo -e "  • S3 Storage:    ${BOLD}https://${S3_DOMAIN}${NC}"
 
+    # DNS Pre-Flight Check
+    echo -e "\n${BLUE}[INFO]${NC} Performing DNS Pre-Flight validation for configured subdomains..."
+    DNS_RESOLVE_FAIL=false
+    for d in "$WEB_DOMAIN" "$API_DOMAIN" "$S3_DOMAIN"; do
+        d_resolved=false
+        if command -v getent >/dev/null 2>&1; then
+            if getent ahosts "$d" >/dev/null 2>&1 || getent hosts "$d" >/dev/null 2>&1; then
+                d_resolved=true
+            fi
+        elif command -v host >/dev/null 2>&1; then
+            if host "$d" >/dev/null 2>&1; then
+                d_resolved=true
+            fi
+        elif command -v nslookup >/dev/null 2>&1; then
+            res=$(nslookup "$d" 2>&1 || true)
+            if echo "$res" | grep -iqE "can't find|non-existent|nxdomain|server can't find"; then
+                d_resolved=false
+            elif echo "$res" | grep -iqE "Address|answer:"; then
+                d_resolved=true
+            fi
+        elif command -v ping >/dev/null 2>&1; then
+            if ping -c 1 -W 2 "$d" >/dev/null 2>&1 || ping -n 1 -w 2000 "$d" >/dev/null 2>&1; then
+                d_resolved=true
+            fi
+        fi
+
+        if [ "$d_resolved" = true ]; then
+            echo -e "  ${GREEN}[✔]${NC} ${d} resolves successfully."
+        else
+            echo -e "  ${YELLOW}[⚠]${NC} ${d} does not resolve (NXDOMAIN or unreachable)."
+            DNS_RESOLVE_FAIL=true
+        fi
+    done
+
+    if [ "$DNS_RESOLVE_FAIL" = true ]; then
+        echo -e "\n${YELLOW}${BOLD}[NOTICE] DNS Pre-Flight Alert:${NC}"
+        echo -e "  One or more subdomains do not resolve yet. This is expected if you have"
+        echo -e "  not yet created the Public Hostnames in Cloudflare Zero Trust (or DNS records)."
+        echo -e "  Please ensure all 3 hostnames are configured before accessing Ente.\n"
+    fi
+
     # Reverse Proxy Network Isolation & Security
     echo -e "\n────────────────────────────────────────────────────────────────────────"
     echo -e "${BOLD}Reverse Proxy Network Isolation & Security:${NC}"
@@ -366,7 +407,7 @@ s3:
     key: "${MINIO_USER}"
     secret: "${MINIO_PASS}"
     endpoint: "${S3_ENDPOINT}"
-    region: eu-west-1
+    region: eu-central-2
     bucket: scw-eu-fr-v3
 
 apps:
@@ -403,6 +444,8 @@ services:
     image: ghcr.io/ente/server
     container_name: ente-museum
     restart: unless-stopped
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: 1
     ports:
       - "${PORT_BIND_PREFIX}${API_PORT}:8080"
     depends_on:
@@ -568,6 +611,21 @@ if [ "$PORT_BIND_PREFIX" = "127.0.0.1:" ]; then
     echo -e "  • Reverse proxy ports ${GREEN}isolated to 127.0.0.1${NC} (direct WAN access prevented)."
 else
     echo -e "  • Host ports bound to 0.0.0.0 for LAN / remote reverse proxy access."
+fi
+echo -e ""
+if [ "$MODE" = "DOMAIN" ]; then
+    echo -e "${BOLD}▶ Cloudflare Zero Trust Ingress Checklist:${NC}"
+    echo -e "${CYAN}┌──────────────────────────────┬───────────────────┬──────────────────────────┐${NC}"
+    printf "${CYAN}│${NC} %-28s ${CYAN}│${NC} %-17s ${CYAN}│${NC} %-24s ${CYAN}│${NC}\n" "Public Hostname" "Service Type" "Target URL"
+    echo -e "${CYAN}├──────────────────────────────┼───────────────────┼──────────────────────────┤${NC}"
+    printf "${CYAN}│${NC} %-28s ${CYAN}│${NC} %-17s ${CYAN}│${NC} %-24s ${CYAN}│${NC}\n" "${WEB_DOMAIN}" "HTTP" "localhost:${WEB_PORT}"
+    printf "${CYAN}│${NC} %-28s ${CYAN}│${NC} %-17s ${CYAN}│${NC} %-24s ${CYAN}│${NC}\n" "${API_DOMAIN}" "HTTP" "localhost:${API_PORT}"
+    printf "${CYAN}│${NC} %-28s ${CYAN}│${NC} %-17s ${CYAN}│${NC} %-24s ${CYAN}│${NC}\n" "${S3_DOMAIN}" "HTTP" "localhost:${MINIO_PORT}"
+    echo -e "${CYAN}└──────────────────────────────┴───────────────────┴──────────────────────────┘${NC}"
+    echo -e "  ${YELLOW}⚠ CRITICAL Cloudflare Rules:${NC}"
+    echo -e "    1. Keep ${BOLD}Cloudflare Access (SSO/PIN)${NC} DISABLED on ${CYAN}${API_DOMAIN}${NC} and ${CYAN}${S3_DOMAIN}${NC}."
+    echo -e "    2. Under Cloudflare Tunnel Public Hostname for ${CYAN}${S3_DOMAIN}${NC}, allow chunked uploads (100MB+)."
+    echo -e "    3. Ingress templates saved in: ${TARGET_DIR}/reverse-proxy/\n"
 fi
 echo -e ""
 echo -e "${BOLD}▶ Next Steps for Mobile App:${NC}"
