@@ -618,6 +618,100 @@ configure_topology() {
 }
 
 # ------------------------------------------------------------------------------
+# Step 3.5: Storage Quota Sizing & Host Drive Protection
+# ------------------------------------------------------------------------------
+allocate_storage_quota() {
+    log_step "Step 3.5: Configuring Storage Quota & Drive Protection"
+
+    local avail_kb
+    avail_kb=$(df -k -P "$TARGET_DIR" 2>/dev/null | awk 'NR==2 {print $4}' || true)
+    avail_kb=${avail_kb:-104857600}
+    if [[ ! "$avail_kb" =~ ^[0-9]+$ ]] || [ "$avail_kb" -le 0 ]; then
+        avail_kb=104857600
+    fi
+
+    local avail_gb=$(( avail_kb / 1024 / 1024 ))
+    if [ "$avail_gb" -le 0 ]; then
+        avail_gb=10
+    fi
+
+    local raw_alloc_gb=$(( avail_gb * 60 / 100 ))
+    local rounded_gb=$(( ((raw_alloc_gb + 9) / 10) * 10 ))
+    if [ "$rounded_gb" -gt "$avail_gb" ]; then
+        rounded_gb=$raw_alloc_gb
+    fi
+    if [ "$rounded_gb" -le 0 ]; then
+        rounded_gb=1
+    fi
+
+    echo -e "\n${BOLD}Storage Quota & Host Drive Safety:${NC}"
+    echo -e "  • Available Disk Space:      ${CYAN}${avail_gb} GB${NC}"
+    echo -e "  • Default Safe Allocation:   ${GREEN}60%${NC} (~${raw_alloc_gb} GB -> ${GREEN}${rounded_gb} GB${NC} rounded up to multiple of 10)"
+    echo -e "  ${YELLOW}Notice:${NC} Setting a safe limit leaves remaining disk protected for OS, logs, and Docker."
+
+    local quota_input
+    if [ "$UNATTENDED" = true ] || [ "$DRY_RUN" = true ]; then
+        quota_input="${rounded_gb}GB"
+        log_info "[Unattended/Dry-Run] Applying default quota: ${quota_input}"
+    else
+        read -rp "Enter percentage of available space (e.g. 60%) or custom size (e.g. 500GB) [default: 60%]: " quota_input
+        quota_input=${quota_input:-"60%"}
+    fi
+
+    local chosen_bytes
+    local chosen_human
+    local upper_input
+    upper_input=$(echo "$quota_input" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]')
+
+    if [[ "$upper_input" =~ ^([0-9]+)%$ ]] || [[ "$upper_input" =~ ^([0-9]+)%FREE$ ]] || [[ "$upper_input" =~ ^([0-9]+)%AVAIL$ ]]; then
+        local user_pct=${BASH_REMATCH[1]}
+        local calc_gb=$(( avail_gb * user_pct / 100 ))
+        local calc_rounded_gb=$(( ((calc_gb + 9) / 10) * 10 ))
+        if [ "$calc_rounded_gb" -gt "$avail_gb" ]; then
+            calc_rounded_gb=$calc_gb
+        fi
+        if [ "$calc_rounded_gb" -le 0 ]; then
+            calc_rounded_gb=1
+        fi
+
+        if [ "$UNATTENDED" = false ] && [ "$DRY_RUN" = false ]; then
+            read -rp "${user_pct}% of available space is ${calc_gb} GB. Round up to nearest multiple of 10 (${calc_rounded_gb} GB)? [Y/n, default: Y]: " round_choice
+            round_choice=${round_choice:-Y}
+            if [[ "$round_choice" =~ ^[Yy]$ ]]; then
+                chosen_bytes=$(( calc_rounded_gb * 1024 * 1024 * 1024 ))
+                chosen_human="${calc_rounded_gb} GB"
+            else
+                chosen_bytes=$(( calc_gb * 1024 * 1024 * 1024 ))
+                chosen_human="${calc_gb} GB"
+            fi
+        else
+            chosen_bytes=$(( calc_rounded_gb * 1024 * 1024 * 1024 ))
+            chosen_human="${calc_rounded_gb} GB"
+        fi
+    elif [[ "$upper_input" =~ ^([0-9]+)TB$ ]]; then
+        local num_tb=${BASH_REMATCH[1]}
+        chosen_bytes=$(( num_tb * 1024 * 1024 * 1024 * 1024 ))
+        chosen_human="${num_tb} TB"
+    elif [[ "$upper_input" =~ ^([0-9]+)GB$ ]]; then
+        local num_gb=${BASH_REMATCH[1]}
+        chosen_bytes=$(( num_gb * 1024 * 1024 * 1024 ))
+        chosen_human="${num_gb} GB"
+    elif [[ "$upper_input" =~ ^[0-9]+$ ]]; then
+        local num_raw=$upper_input
+        chosen_bytes=$(( num_raw * 1024 * 1024 * 1024 ))
+        chosen_human="${num_raw} GB"
+    else
+        log_warn "Unrecognized format '${quota_input}'. Falling back to default ${rounded_gb} GB."
+        chosen_bytes=$(( rounded_gb * 1024 * 1024 * 1024 ))
+        chosen_human="${rounded_gb} GB"
+    fi
+
+    ENTE_QUOTA_BYTES="$chosen_bytes"
+    ENTE_QUOTA_HUMAN="$chosen_human"
+    log_success "Allocated Ente Storage Quota: ${ENTE_QUOTA_HUMAN} (${ENTE_QUOTA_BYTES} bytes)"
+}
+
+# ------------------------------------------------------------------------------
 # Step 4: Cryptographic Secret Generation
 # ------------------------------------------------------------------------------
 generate_secrets() {
@@ -658,6 +752,8 @@ MUSEUM_JWT_SECRET=${JWT_SECRET}
 WEB_ORIGIN=${WEB_ORIGIN}
 API_ORIGIN=${API_ORIGIN}
 S3_ENDPOINT=${S3_ENDPOINT}
+ENTE_QUOTA_BYTES=${ENTE_QUOTA_BYTES}
+ENTE_QUOTA_HUMAN=${ENTE_QUOTA_HUMAN// /}
 EOF
     chmod 600 "$TARGET_DIR/credentials.env"
     log_success "Secrets generated and stored securely in credentials.env (chmod 600)"
@@ -984,49 +1080,79 @@ EOF
     # Helper 2: ./set-quota.sh
     cat <<'EOF' > "$TARGET_DIR/set-quota.sh"
 #!/usr/bin/env bash
-# Usage: ./set-quota.sh [SIZE_GB_OR_TB] [USER_ID_OPTIONAL]
+# Ente Storage Quota Utility
+# Usage: ./set-quota.sh [SIZE_OR_PERCENTAGE] [USER_ID_OPTIONAL]
 # Examples:
-#   ./set-quota.sh 10TB
-#   ./set-quota.sh 50GB
-#   ./set-quota.sh 500GB 1580559962386438
+#   ./set-quota.sh                 # Interactive mode with available space detection
+#   ./set-quota.sh 60%             # 60% of available space (rounded up to multiple of 10)
+#   ./set-quota.sh 500GB           # Fixed 500 GB
+#   ./set-quota.sh 2TB 1580559962386438
 
-INPUT_SIZE=${1:-"10TB"}
-TARGET_USER=$2
+set -eo pipefail
 
-# Determine Docker command (sudo-aware)
 DOCKER_BIN="docker"
 if ! docker info >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
     DOCKER_BIN="sudo docker"
 fi
 
-# Parse Unit
-UPPER_SIZE=$(echo "$INPUT_SIZE" | tr '[:lower:]' '[:upper:]')
-if [[ "$UPPER_SIZE" =~ ^([0-9]+)%FREE$ ]] || [[ "$UPPER_SIZE" =~ ^([0-9]+)%AVAIL$ ]]; then
+DISK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AVAIL_KB=$(df -k -P "$DISK_DIR" 2>/dev/null | awk 'NR==2 {print $4}' || true)
+AVAIL_KB=${AVAIL_KB:-104857600}
+if [[ ! "$AVAIL_KB" =~ ^[0-9]+$ ]] || [ "$AVAIL_KB" -le 0 ]; then
+    AVAIL_KB=104857600
+fi
+AVAIL_GB=$(( AVAIL_KB / 1024 / 1024 ))
+if [ "$AVAIL_GB" -le 0 ]; then
+    AVAIL_GB=10
+fi
+
+INPUT_SIZE=$1
+TARGET_USER=$2
+
+if [ -z "$INPUT_SIZE" ]; then
+    RAW_DEF=$(( AVAIL_GB * 60 / 100 ))
+    ROUNDED_DEF=$(( ((RAW_DEF + 9) / 10) * 10 ))
+    if [ "$ROUNDED_DEF" -gt "$AVAIL_GB" ]; then
+        ROUNDED_DEF=$RAW_DEF
+    fi
+    if [ "$ROUNDED_DEF" -le 0 ]; then
+        ROUNDED_DEF=1
+    fi
+    echo "Storage Quota & Host Drive Safety:"
+    echo "  • Available Disk Space:    ${AVAIL_GB} GB"
+    echo "  • Recommended Allocation:  60% (~${RAW_DEF} GB -> ${ROUNDED_DEF} GB rounded up to multiple of 10)"
+    read -rp "Enter percentage (e.g. 60%) or size (e.g. 500GB) [default: 60%]: " INPUT_SIZE
+    INPUT_SIZE=${INPUT_SIZE:-"60%"}
+fi
+
+UPPER_SIZE=$(echo "$INPUT_SIZE" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]')
+
+if [[ "$UPPER_SIZE" =~ ^([0-9]+)%$ ]] || [[ "$UPPER_SIZE" =~ ^([0-9]+)%FREE$ ]] || [[ "$UPPER_SIZE" =~ ^([0-9]+)%AVAIL$ ]]; then
     PCT=${BASH_REMATCH[1]}
-    DISK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    AVAIL_KB=$(df -k -P "$DISK_DIR" 2>/dev/null | awk 'NR==2 {print $4}')
-    AVAIL_KB=${AVAIL_KB:-104857600}
-    BYTES=$(( AVAIL_KB * 1024 * PCT / 100 ))
-    echo "Calculated ${PCT}% of available free disk space -> $(( BYTES / 1024 / 1024 / 1024 )) GB ($BYTES bytes)"
-elif [[ "$UPPER_SIZE" =~ ^([0-9]+)%$ ]]; then
-    PCT=${BASH_REMATCH[1]}
-    DISK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    TOTAL_KB=$(df -k -P "$DISK_DIR" 2>/dev/null | awk 'NR==2 {print $2}')
-    TOTAL_KB=${TOTAL_KB:-104857600}
-    BYTES=$(( TOTAL_KB * 1024 * PCT / 100 ))
-    echo "Calculated ${PCT}% of total disk space -> $(( BYTES / 1024 / 1024 / 1024 )) GB ($BYTES bytes)"
+    CALC_GB=$(( AVAIL_GB * PCT / 100 ))
+    ROUNDED_GB=$(( ((CALC_GB + 9) / 10) * 10 ))
+    if [ "$ROUNDED_GB" -gt "$AVAIL_GB" ]; then
+        ROUNDED_GB=$CALC_GB
+    fi
+    if [ "$ROUNDED_GB" -le 0 ]; then
+        ROUNDED_GB=1
+    fi
+    BYTES=$(( ROUNDED_GB * 1024 * 1024 * 1024 ))
+    DISPLAY_NAME="${ROUNDED_GB} GB (${PCT}% of available space, rounded up)"
 elif [[ "$UPPER_SIZE" =~ ^([0-9]+)TB$ ]]; then
     NUM=${BASH_REMATCH[1]}
     BYTES=$(( NUM * 1024 * 1024 * 1024 * 1024 ))
+    DISPLAY_NAME="${NUM} TB"
 elif [[ "$UPPER_SIZE" =~ ^([0-9]+)GB$ ]]; then
     NUM=${BASH_REMATCH[1]}
     BYTES=$(( NUM * 1024 * 1024 * 1024 ))
+    DISPLAY_NAME="${NUM} GB"
 elif [[ "$UPPER_SIZE" =~ ^[0-9]+$ ]]; then
-    # Raw bytes or assumed GB
     NUM=$UPPER_SIZE
     BYTES=$(( NUM * 1024 * 1024 * 1024 ))
+    DISPLAY_NAME="${NUM} GB"
 else
-    echo "Invalid size format: $INPUT_SIZE. Use e.g. 60%, 60%free, 50GB, 500GB, 2TB, 10TB."
+    echo "Invalid size format: $INPUT_SIZE. Use e.g. 60%, 500GB, 2TB."
     exit 1
 fi
 
@@ -1040,7 +1166,7 @@ else
     WHERE_CLAUSE="WHERE user_id = (SELECT user_id FROM users ORDER BY creation_time ASC LIMIT 1)"
 fi
 
-echo "Updating account storage quota to $INPUT_SIZE ($BYTES bytes)..."
+echo "Updating account storage quota to $DISPLAY_NAME ($BYTES bytes)..."
 $DOCKER_BIN exec -i ente-postgres psql -U pguser -d ente_db -c \
   "UPDATE subscriptions SET storage = $BYTES $WHERE_CLAUSE; SELECT user_id, storage, product_id FROM subscriptions $WHERE_CLAUSE;"
 echo "Quota updated successfully! Refresh your Ente gallery tab."
@@ -1056,25 +1182,31 @@ EOF
         log_success "Companion tool reconfigure.sh deployed to: $TARGET_DIR"
     fi
 
-    # Background Watcher: Auto-Upgrade First Account to 10 TB upon sign-up (1-hour window)
+    # Background Watcher: Auto-Upgrade First Account to configured quota upon sign-up (1-hour window)
     cat <<'EOF' > "$TARGET_DIR/.auto-quota-daemon.sh"
 #!/usr/bin/env bash
-# Runs silently in the background for 1 hour to auto-upgrade the first registered user to 10 TB
+# Runs silently in the background for 1 hour to auto-upgrade the first registered user to configured quota
 DOCKER_BIN="docker"
 if ! docker info >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
     DOCKER_BIN="sudo docker"
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TARGET_QUOTA_BYTES=""
+if [ -f "$SCRIPT_DIR/credentials.env" ]; then
+    TARGET_QUOTA_BYTES=$(grep "^ENTE_QUOTA_BYTES=" "$SCRIPT_DIR/credentials.env" | cut -d'=' -f2- | tr -d '\r\n"')
+fi
+TARGET_QUOTA_BYTES=${TARGET_QUOTA_BYTES:-504658657280}
+
 # 720 iterations * 5 seconds = 3600 seconds (1 hour window)
 for i in $(seq 1 720); do
-    # Check directly in subscriptions table where storage is still at default (10 GB)
+    # Check directly in subscriptions table where storage is still at default free plan (<= 10 GB)
     USER_ID=$($DOCKER_BIN exec -i ente-postgres psql -U pguser -d ente_db -tAc \
-      "SELECT user_id FROM subscriptions WHERE storage < 10995116277760 LIMIT 1;" 2>/dev/null || true)
+      "SELECT user_id FROM subscriptions WHERE storage <= 10737418240 LIMIT 1;" 2>/dev/null || true)
     USER_ID=$(echo "$USER_ID" | tr -d '[:space:]')
     if [[ "$USER_ID" =~ ^[0-9]+$ ]] && [ "$USER_ID" -gt 0 ] 2>/dev/null; then
-        # Upgrade to 10 TB (10995116277760 bytes)
         $DOCKER_BIN exec -i ente-postgres psql -U pguser -d ente_db -c \
-          "UPDATE subscriptions SET storage = 10995116277760 WHERE user_id = $USER_ID;" >/dev/null 2>&1
+          "UPDATE subscriptions SET storage = $TARGET_QUOTA_BYTES WHERE user_id = $USER_ID;" >/dev/null 2>&1
         exit 0
     fi
     sleep 5
@@ -1085,7 +1217,7 @@ EOF
         log_info "[DRY-RUN] Companion tools created. Skipping background daemon startup."
     else
         nohup "$TARGET_DIR/.auto-quota-daemon.sh" >/dev/null 2>&1 &
-        log_success "Background 10 TB auto-upgrade daemon launched (waits up to 1 hour for signup)"
+        log_success "Background auto-upgrade daemon launched (${ENTE_QUOTA_HUMAN} limit)"
     fi
 }
 
@@ -1109,10 +1241,10 @@ print_summary() {
     echo -e "     ${YELLOW}${TARGET_DIR}/get-otp.sh${NC}"
     echo -e "  3. When asked to choose a plan, click ${BOLD}'Continue with free plan'${NC}."
     echo -e ""
-    echo -e "${BOLD}▶ Storage Quota Notice (10 TB Auto-Applied):${NC}"
-    echo -e "  • Your account is ${GREEN}automatically upgraded to 10 TB${NC} the moment you sign up!"
-    echo -e "  • If you want to change or lower this quota later, simply run:"
-    echo -e "     ${YELLOW}${TARGET_DIR}/set-quota.sh 50GB${NC}  (or 500GB, 2TB, 10TB)"
+    echo -e "${BOLD}▶ Storage Quota Notice (${ENTE_QUOTA_HUMAN} Safe Limit):${NC}"
+    echo -e "  • Your account is ${GREEN}automatically upgraded to ${ENTE_QUOTA_HUMAN}${NC} the moment you sign up!"
+    echo -e "  • If you want to change or adjust this quota later, simply run:"
+    echo -e "     ${YELLOW}${TARGET_DIR}/set-quota.sh${NC}  (or ${YELLOW}${TARGET_DIR}/reconfigure.sh --quota${NC})"
     echo -e ""
     echo -e "${BOLD}▶ Mobile App Setup (iOS & Android):${NC}"
     echo -e "  • Install the official ${BOLD}Ente Photos${NC} app."
@@ -1186,6 +1318,7 @@ main() {
     preflight_audit
     allocate_ports
     configure_topology
+    allocate_storage_quota
     generate_secrets
     write_configurations
     launch_and_verify

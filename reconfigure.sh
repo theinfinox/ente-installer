@@ -19,12 +19,15 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 DRY_RUN=false
+QUOTA_ONLY=false
 for arg in "$@"; do
     case "$arg" in
         --dry-run|-d) DRY_RUN=true ;;
+        --quota|-q) QUOTA_ONLY=true ;;
         --help|-h)
-            echo "Usage: ./reconfigure.sh [TARGET_DIR] [--dry-run]"
+            echo "Usage: ./reconfigure.sh [TARGET_DIR] [--dry-run] [--quota]"
             echo "  TARGET_DIR       Path to existing Ente directory (default: current directory or ~/ente)"
+            echo "  --quota, -q      Directly reconfigure storage quota without network changes"
             echo "  --dry-run, -d    Preview configuration changes without restarting containers"
             exit 0
             ;;
@@ -168,22 +171,160 @@ echo -e "  • Core API Origin:     ${CYAN}${CURRENT_API_ORIGIN}${NC}"
 echo -e "  • S3 Storage Endpoint: ${CYAN}${CURRENT_S3_ENDPOINT}${NC}"
 echo -e "  • Allocated Ports:     Web:${WEB_PORT}, API:${API_PORT}, S3:${MINIO_PORT}, Albums:${ALBUMS_PORT}"
 
+reconfigure_quota() {
+    echo -e "\n${BOLD}Storage Quota & Host Drive Safety:${NC}"
+
+    local avail_kb
+    avail_kb=$(df -k -P "$TARGET_DIR" 2>/dev/null | awk 'NR==2 {print $4}' || true)
+    avail_kb=${avail_kb:-104857600}
+    if [[ ! "$avail_kb" =~ ^[0-9]+$ ]] || [ "$avail_kb" -le 0 ]; then
+        avail_kb=104857600
+    fi
+    local avail_gb=$(( avail_kb / 1024 / 1024 ))
+    if [ "$avail_gb" -le 0 ]; then
+        avail_gb=10
+    fi
+
+    local raw_alloc_gb=$(( avail_gb * 60 / 100 ))
+    local rounded_gb=$(( ((raw_alloc_gb + 9) / 10) * 10 ))
+    if [ "$rounded_gb" -gt "$avail_gb" ]; then
+        rounded_gb=$raw_alloc_gb
+    fi
+    if [ "$rounded_gb" -le 0 ]; then
+        rounded_gb=1
+    fi
+
+    local cur_quota="10 GB (Default)"
+    local cur_user=""
+    local DOCKER_BIN="docker"
+    if ! docker info >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
+        DOCKER_BIN="sudo docker"
+    fi
+
+    if [ "$DRY_RUN" = false ]; then
+        local user_row
+        user_row=$($DOCKER_BIN exec -i ente-postgres psql -U pguser -d ente_db -tAc \
+          "SELECT user_id, storage FROM subscriptions ORDER BY subscription_id ASC LIMIT 1;" 2>/dev/null || true)
+        if [ -n "$user_row" ]; then
+            cur_user=$(echo "$user_row" | cut -d'|' -f1)
+            local cur_b=$(echo "$user_row" | cut -d'|' -f2)
+            if [ -n "$cur_b" ] && [ "$cur_b" -gt 0 ] 2>/dev/null; then
+                cur_quota="$(( cur_b / 1024 / 1024 / 1024 )) GB"
+            fi
+        fi
+    fi
+
+    echo -e "  • Available Disk Space:      ${CYAN}${avail_gb} GB${NC}"
+    echo -e "  • Current Active Quota:      ${YELLOW}${cur_quota}${NC}"
+    echo -e "  • Default Safe Allocation:   ${GREEN}60%${NC} (~${raw_alloc_gb} GB -> ${GREEN}${rounded_gb} GB${NC} rounded up to multiple of 10)"
+    echo -e "  ${YELLOW}Notice:${NC} Setting a safe limit leaves remaining disk protected for OS, logs, and Docker.\n"
+
+    local q_input
+    if [ "$DRY_RUN" = true ]; then
+        q_input="${rounded_gb}GB"
+        echo -e "[DRY-RUN] Using calculated default: ${q_input}"
+    else
+        read -rp "Enter percentage of available space (e.g. 60%) or custom size (e.g. 500GB) [default: 60%]: " q_input
+        q_input=${q_input:-"60%"}
+    fi
+
+    local chosen_bytes
+    local chosen_human
+    local upper_q
+    upper_q=$(echo "$q_input" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]')
+
+    if [[ "$upper_q" =~ ^([0-9]+)%$ ]] || [[ "$upper_q" =~ ^([0-9]+)%FREE$ ]] || [[ "$upper_q" =~ ^([0-9]+)%AVAIL$ ]]; then
+        local user_pct=${BASH_REMATCH[1]}
+        local calc_gb=$(( avail_gb * user_pct / 100 ))
+        local calc_rounded_gb=$(( ((calc_gb + 9) / 10) * 10 ))
+        if [ "$calc_rounded_gb" -gt "$avail_gb" ]; then
+            calc_rounded_gb=$calc_gb
+        fi
+        if [ "$calc_rounded_gb" -le 0 ]; then
+            calc_rounded_gb=1
+        fi
+
+        if [ "$DRY_RUN" = false ]; then
+            read -rp "${user_pct}% of available space is ${calc_gb} GB. Round up to nearest multiple of 10 (${calc_rounded_gb} GB)? [Y/n, default: Y]: " round_choice
+            round_choice=${round_choice:-Y}
+            if [[ "$round_choice" =~ ^[Yy]$ ]]; then
+                chosen_bytes=$(( calc_rounded_gb * 1024 * 1024 * 1024 ))
+                chosen_human="${calc_rounded_gb} GB"
+            else
+                chosen_bytes=$(( calc_gb * 1024 * 1024 * 1024 ))
+                chosen_human="${calc_gb} GB"
+            fi
+        else
+            chosen_bytes=$(( calc_rounded_gb * 1024 * 1024 * 1024 ))
+            chosen_human="${calc_rounded_gb} GB"
+        fi
+    elif [[ "$upper_q" =~ ^([0-9]+)TB$ ]]; then
+        local num_tb=${BASH_REMATCH[1]}
+        chosen_bytes=$(( num_tb * 1024 * 1024 * 1024 * 1024 ))
+        chosen_human="${num_tb} TB"
+    elif [[ "$upper_q" =~ ^([0-9]+)GB$ ]]; then
+        local num_gb=${BASH_REMATCH[1]}
+        chosen_bytes=$(( num_gb * 1024 * 1024 * 1024 ))
+        chosen_human="${num_gb} GB"
+    elif [[ "$upper_q" =~ ^[0-9]+$ ]]; then
+        local num_raw=$upper_q
+        chosen_bytes=$(( num_raw * 1024 * 1024 * 1024 ))
+        chosen_human="${num_raw} GB"
+    else
+        echo -e "${YELLOW}[⚠] Unrecognized format '${q_input}'. Using default ${rounded_gb} GB.${NC}"
+        chosen_bytes=$(( rounded_gb * 1024 * 1024 * 1024 ))
+        chosen_human="${rounded_gb} GB"
+    fi
+
+    if [ "$DRY_RUN" = true ]; then
+        echo -e "${GREEN}[✔] [DRY-RUN] Storage quota would be updated to: ${chosen_human} (${chosen_bytes} bytes)${NC}"
+    else
+        local where_clause=""
+        if [ -n "$cur_user" ]; then
+            where_clause="WHERE user_id = $cur_user"
+        else
+            where_clause="WHERE user_id = (SELECT user_id FROM users ORDER BY creation_time ASC LIMIT 1)"
+        fi
+        $DOCKER_BIN exec -i ente-postgres psql -U pguser -d ente_db -c \
+          "UPDATE subscriptions SET storage = $chosen_bytes $where_clause; SELECT user_id, storage, product_id FROM subscriptions $where_clause;"
+        echo -e "${GREEN}[✔] Storage quota updated successfully to ${chosen_human}! (Zero container downtime)${NC}"
+    fi
+
+    if [ -f "$TARGET_DIR/credentials.env" ]; then
+        if grep -q "^ENTE_QUOTA_BYTES=" "$TARGET_DIR/credentials.env"; then
+            sed -i "s/^ENTE_QUOTA_BYTES=.*/ENTE_QUOTA_BYTES=${chosen_bytes}/" "$TARGET_DIR/credentials.env"
+            sed -i "s/^ENTE_QUOTA_HUMAN=.*/ENTE_QUOTA_HUMAN=${chosen_human// /}/" "$TARGET_DIR/credentials.env"
+        else
+            echo "ENTE_QUOTA_BYTES=${chosen_bytes}" >> "$TARGET_DIR/credentials.env"
+            echo "ENTE_QUOTA_HUMAN=${chosen_human// /}" >> "$TARGET_DIR/credentials.env"
+        fi
+    fi
+}
+
 # 3. Interactive Topology Selection
 AUTO_LAN_IP=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7}' || hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")
 AUTO_LAN_IP="${AUTO_LAN_IP:-127.0.0.1}"
 AUTO_LAN_IP=$(echo "$AUTO_LAN_IP" | tr -d '[:space:]')
 
-echo -e "\n${BOLD}Select new network access mode:${NC}"
-echo -e "  ${BOLD}[1] Local Network / Private IP${NC} (Switch to LAN IP: ${AUTO_LAN_IP})"
-echo -e "  ${BOLD}[2] Public Domain / Reverse Proxy${NC} (Cloudflare Tunnel, Caddy, Nginx with HTTPS)"
-echo -e "  ${BOLD}[3] Cancel & Keep Current Settings${NC}"
-read -rp "Select option [1/2/3, default: 1]: " NET_CHOICE
-NET_CHOICE=${NET_CHOICE:-1}
+if [ "$QUOTA_ONLY" = true ]; then
+    ACTION_CHOICE=3
+else
+    echo -e "\n${BOLD}Select reconfiguration task:${NC}"
+    echo -e "  ${BOLD}[1] Local Network / Private IP${NC} (Switch to LAN IP: ${AUTO_LAN_IP})"
+    echo -e "  ${BOLD}[2] Public Domain / Reverse Proxy${NC} (Cloudflare Tunnel, Caddy, Nginx with HTTPS)"
+    echo -e "  ${BOLD}[3] Storage Quota Allocation${NC} (Adjust safe disk space limit / percentage)"
+    echo -e "  ${BOLD}[4] Cancel & Keep Current Settings${NC}"
+    read -rp "Select option [1/2/3/4, default: 1]: " ACTION_CHOICE
+    ACTION_CHOICE=${ACTION_CHOICE:-1}
+fi
 
-if [ "$NET_CHOICE" -eq 3 ]; then
+if [ "$ACTION_CHOICE" -eq 4 ]; then
     echo "No changes made. Exiting."
     exit 0
-elif [ "$NET_CHOICE" -eq 2 ]; then
+elif [ "$ACTION_CHOICE" -eq 3 ]; then
+    reconfigure_quota
+    exit 0
+elif [ "$ACTION_CHOICE" -eq 2 ]; then
     MODE="DOMAIN"
     read -rp "Enter your primary root domain for Ente (e.g., example.com): " ROOT_DOMAIN
     ROOT_DOMAIN=$(echo "$ROOT_DOMAIN" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')

@@ -54,7 +54,7 @@
   * [Step 4: Configuration Files (`museum.yaml` & `compose.yaml`)](#step-4-configuration-files-museumyaml--composeyaml)
   * [Step 5: Launching & Verifying the Stack](#step-5-launching--verifying-the-stack)
   * [Step 6: Account Creation & OTP Retrieval](#step-6-account-creation--otp-retrieval)
-  * [Step 7: Unlocking 10 TB / Custom Storage Quota](#step-7-unlocking-10-tb--custom-storage-quota)
+  * [Step 7: Safe Storage Quota Sizing & Host Drive Protection](#step-7-safe-storage-quota-sizing--host-drive-protection)
 * [Remote Access & Mobile Apps (Photos & Auth)](#remote-access--mobile-apps-photos--auth)
   * [Method A: Cloudflare Zero Trust Tunnel](#method-a-cloudflare-zero-trust-tunnel-easiest-zero-port-forwarding)
   * [Method B: Caddy Reverse Proxy](#method-b-caddy-reverse-proxy-automatic-lets-encrypt-ssl)
@@ -414,18 +414,52 @@ services:
 
 ---
 
-### Step 7: Unlocking 10 TB / Custom Storage Quota
+### Step 7: Safe Storage Quota Sizing & Host Drive Protection
 
-By default, Ente initializes accounts with a 10 GB quota in the database. Because this is your own server, you can expand this limit to whatever capacity you need (e.g., 10 TB = `10995116277760` bytes).
+By default, Ente initializes accounts with a restricted 10 GB cloud-tier quota in the database. While it is tempting to set an arbitrary limit like 10 TB, doing so on a drive under 10 TB introduces serious operational risks.
 
-Run this single SQL command directly on your server:
+#### Why Storage Safety Margins Matter in Self-Hosting
+When self-hosting Ente on a home server, NAS, or VM, your physical storage volume is shared between Ente's encrypted files, the PostgreSQL database, and your host operating system:
+1. **PostgreSQL WAL Crash Protection**: PostgreSQL writes transaction logs (Write-Ahead Logs / WAL) before committing data. If the disk fills to 100%, PostgreSQL enters an emergency read-only panic mode or shuts down abruptly with dirty locks.
+2. **Docker Daemon Integrity**: When host storage is exhausted, Docker cannot write container state or stream logs, leading to daemon crashes and inability to start or stop containers.
+3. **Host OS & Co-Located Workload Stability**: Reserving a safety buffer ensures that Ubuntu system updates, systemd journals, SSH access, and co-located services (such as WordPress, MariaDB, or Grafana) never starve for disk space.
 
-```bash
-docker exec -i ente-postgres psql -U pguser -d ente_db -c \
-  "UPDATE subscriptions SET storage = 10995116277760 WHERE user_id = (SELECT user_id FROM users LIMIT 1);"
-```
+#### Dynamic Default: 60% of Available Space (Rounded Up to Multiple of 10)
+Both `install.sh` and `reconfigure.sh` inspect the physical volume hosting your Ente data and calculate a safe quota:
+$$\text{Allocated\_GB} = \left\lfloor \frac{\text{Raw\_60\%\_GB} + 9}{10} \right\rfloor \times 10$$
+*Example:* On a server with 775 GB available disk space:
+* $60\% \text{ of } 775\text{ GB} = 465\text{ GB} \rightarrow \mathbf{470\text{ GB}}$ allocated to Ente.
+* **305 GB** remains permanently guarded for system stability.
 
-Refresh your web gallery tab and open **Settings** $\rightarrow$ **Account**: your storage quota will now show **10 TB**.
+#### How to Check & Reconfigure Your Quota Anytime
+
+You can modify your quota with **zero container downtime** using either companion tool:
+
+1. **Via `reconfigure.sh` (Interactive Menu or Flag)**:
+   ```bash
+   ./reconfigure.sh --quota
+   ```
+   Or launch `./reconfigure.sh` and select **Option [3] Storage Quota Allocation**.
+
+2. **Via `set-quota.sh` (CLI Companion Tool)**:
+   ```bash
+   # Interactive mode (detects available space and recommends 60% rounded up)
+   ./set-quota.sh
+
+   # Set to 60% of available space dynamically
+   ./set-quota.sh 60%
+
+   # Set to a fixed size
+   ./set-quota.sh 500GB
+   ```
+
+3. **Direct SQL (Alternative)**:
+   ```bash
+   docker exec -i ente-postgres psql -U pguser -d ente_db -c \
+     "UPDATE subscriptions SET storage = 504658657280 WHERE user_id = (SELECT user_id FROM users LIMIT 1);"
+   ```
+
+Refresh your web gallery tab and open **Settings** $\rightarrow$ **Account**: your storage quota will immediately reflect your updated allocation.
 
 ---
 

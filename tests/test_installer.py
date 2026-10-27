@@ -151,6 +151,37 @@ echo "$BYTES"
     code, out, err = run_bash_code(pct_snippet)
     assert_test("Quota percentage math for '60%' calculates correctly", out == str(600000 * 1024))
 
+    # Test ceiling multiple-of-10 round-up quota math
+    round_cases = [
+        (461, 470),
+        (465, 470),
+        (460, 460),
+        (470, 470),
+        (7, 10),
+        (1, 10),
+    ]
+    for raw_gb, expected_rounded in round_cases:
+        round_snippet = f"""
+RAW_GB={raw_gb}
+ROUNDED_GB=$(( ((RAW_GB + 9) / 10) * 10 ))
+echo "$ROUNDED_GB"
+"""
+        code, out, err = run_bash_code(round_snippet)
+        assert_test(f"Ceiling round-up multiple-of-10 for {raw_gb} GB -> {expected_rounded} GB", out == str(expected_rounded), f"Got {out}")
+
+    # Test safety clamp when round-up exceeds available disk
+    clamp_snippet = """
+AVAIL_GB=8
+CALC_GB=$(( AVAIL_GB * 60 / 100 )) # 4 GB
+ROUNDED_GB=$(( ((CALC_GB + 9) / 10) * 10 )) # 10 GB
+if [ "$ROUNDED_GB" -gt "$AVAIL_GB" ]; then
+    ROUNDED_GB=$CALC_GB
+fi
+echo "$ROUNDED_GB"
+"""
+    code, out, err = run_bash_code(clamp_snippet)
+    assert_test("Low-disk safety clamp prevents rounding up past physical capacity (8GB -> 4GB)", out == "4", f"Got {out}")
+
     # -------------------------------------------------------------------------
     # Test 4: YAML Syntax & Semantic Validation (museum.yaml & compose.yaml)
     # -------------------------------------------------------------------------
@@ -304,6 +335,9 @@ echo "$clean_msg"
     assert_test("reconfigure.sh sets chmod 600 on museum.yaml", 'chmod 600 "$TARGET_DIR/museum.yaml"' in reconfig_content)
     assert_test("install.sh informs user of security hardening in summary", "Security & Hardening Applied" in content)
     assert_test("reconfigure.sh informs user of security hardening in summary", "Security & Hardening Applied" in reconfig_content)
+    assert_test("install.sh informs user of storage quota in summary", "Storage Quota Notice" in content)
+    assert_test("install.sh contains allocate_storage_quota function", "allocate_storage_quota()" in content)
+    assert_test("reconfigure.sh contains reconfigure_quota function", "reconfigure_quota()" in reconfig_content)
     assert_test("install.sh contains DNS Pre-Flight validation logic", "Performing DNS Pre-Flight validation" in content)
     assert_test("reconfigure.sh contains DNS Pre-Flight validation logic", "Performing DNS Pre-Flight validation" in reconfig_content)
     assert_test("install.sh contains Cloudflare Zero Trust Ingress Checklist", "Cloudflare Zero Trust Ingress Checklist" in content)
@@ -376,6 +410,17 @@ s3:
         assert_test("reconfigured compose.yaml is 100% valid YAML", isinstance(reconfig_compose, dict))
         assert_test("reconfigured compose.yaml has sysctls net.ipv6.conf.all.disable_ipv6=1",
                     reconfig_compose.get("services", {}).get("museum", {}).get("sysctls", {}).get("net.ipv6.conf.all.disable_ipv6") == 1)
+
+        # Test Option 3: Storage Quota Allocation in reconfigure.sh
+        quota_reconfig_cmd = f"bash '{reconfig_path}' '{temp_dir}' --dry-run <<< $'3\\n60%\\nY\\n'"
+        code, out, err = run_bash_code(quota_reconfig_cmd)
+        assert_test("reconfigure.sh Option 3 executes storage quota allocation in dry-run mode", code == 0, err)
+        assert_test("reconfigure.sh Option 3 outputs Storage Quota & Host Drive Safety banner", "Storage Quota & Host Drive Safety" in out)
+
+        # Test --quota CLI flag in reconfigure.sh
+        quota_flag_cmd = f"bash '{reconfig_path}' '{temp_dir}' --dry-run --quota <<< $'60%\\nY\\n'"
+        code, out, err = run_bash_code(quota_flag_cmd)
+        assert_test("reconfigure.sh --quota directly triggers storage quota allocation", code == 0, err)
 
     # Test dry-run reconfiguration in Domain Mode with Local Reverse Proxy Isolation
     with tempfile.TemporaryDirectory() as temp_dir_domain:
