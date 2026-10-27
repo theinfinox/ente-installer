@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Shell Auto-Wrapper: Re-execute in bash if invoked via sh/dash
+if [ -z "$BASH_VERSION" ]; then
+    exec bash "$0" "$@"
+fi
 # ==============================================================================
 # Ente Network & Endpoint Reconfiguration Utility
 # Repository: https://github.com/theinfinox/ente-installer
@@ -575,6 +579,19 @@ mail:
 EOF
 chmod 600 "$TARGET_DIR/museum.yaml"
 
+# Detect SELinux & Volume Context
+SELINUX_VOLUME_SUFFIX=""
+if command -v getenforce >/dev/null 2>&1 && [ "$(getenforce 2>/dev/null)" = "Enforcing" ]; then
+    SELINUX_VOLUME_SUFFIX=":z"
+fi
+
+# Detect Kernel IPv6 state
+IPV6_SYSCTL_SNIPPET=""
+if [ ! -f "/proc/sys/net/ipv4/ip_forward" ] || [ -d "/proc/sys/net/ipv6" ]; then
+    IPV6_SYSCTL_SNIPPET="    sysctls:
+      net.ipv6.conf.all.disable_ipv6: 1"
+fi
+
 # 6. Rewrite compose.yaml in place
 cat <<EOF > "$TARGET_DIR/compose.yaml"
 # Ente Docker Compose Stack
@@ -585,8 +602,7 @@ services:
     image: ghcr.io/ente/server
     container_name: ente-museum
     restart: unless-stopped
-    sysctls:
-      net.ipv6.conf.all.disable_ipv6: 1
+${IPV6_SYSCTL_SNIPPET}
     ports:
       - "${PORT_BIND_PREFIX}${API_PORT}:8080"
     depends_on:
@@ -637,7 +653,7 @@ services:
       retries: 20
       start_period: 60s
     volumes:
-      - ./pg_data:/var/lib/postgresql/data
+      - ./pg_data:/var/lib/postgresql/data${SELINUX_VOLUME_SUFFIX}
 
   minio:
     image: pgsty/silo
@@ -650,7 +666,7 @@ services:
       MINIO_ROOT_PASSWORD: "${MINIO_PASS}"
     command: server /data --address ":3200" --console-address ":3201"
     volumes:
-      - ./minio_data:/data
+      - ./minio_data:/data${SELINUX_VOLUME_SUFFIX}
     post_start:
       - command: |
           sh -c '

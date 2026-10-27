@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Shell Auto-Wrapper: Re-execute in bash if invoked via sh/dash
+if [ -z "$BASH_VERSION" ]; then
+    exec bash "$0" "$@"
+fi
 # ==============================================================================
 # Ente All-in-One Fail-Safe Installer
 # Repository: https://github.com/ente/ente
@@ -107,11 +111,15 @@ preflight_audit() {
             exit 1
             ;;
         CYGWIN*|MINGW*|MSYS*)
-            log_error "Native Windows shell detected (${OS_TYPE} / Git Bash / MSYS)."
-            echo -e "  Ente cannot be hosted directly inside a native Windows terminal."
-            echo -e "  ${BOLD}Solution:${NC} Open a ${CYAN}WSL2 terminal (Ubuntu)${NC} on Windows and run this script inside WSL2,"
-            echo -e "  or run it directly on a dedicated Linux server / homelab."
-            exit 1
+            if [ "$DRY_RUN" = true ]; then
+                log_info "[DRY-RUN] Simulating Linux environment for configuration audit."
+            else
+                log_error "Native Windows shell detected (${OS_TYPE} / Git Bash / MSYS)."
+                echo -e "  Ente cannot be hosted directly inside a native Windows terminal."
+                echo -e "  ${BOLD}Solution:${NC} Open a ${CYAN}WSL2 terminal (Ubuntu)${NC} on Windows and run this script inside WSL2,"
+                echo -e "  or run it directly on a dedicated Linux server / homelab."
+                exit 1
+            fi
             ;;
         *)
             log_error "Unsupported operating system: ${OS_TYPE}. Ente requires a Linux environment."
@@ -169,31 +177,43 @@ preflight_audit() {
 
     # 4. Check Docker & Compose
     if ! command -v docker >/dev/null 2>&1; then
-        log_warn "Docker is not installed on this machine."
-        read -rp "Would you like this script to install official Docker & Compose automatically? [Y/n]: " INSTALL_DOCKER_CHOICE
-        INSTALL_DOCKER_CHOICE=${INSTALL_DOCKER_CHOICE:-Y}
-        if [[ "$INSTALL_DOCKER_CHOICE" =~ ^[Yy]$ ]]; then
-            log_info "Downloading and running official Docker install script..."
-            curl -fsSL https://get.docker.com | $SUDO_CMD sh
-            if [ -n "$SUDO_USER" ]; then
-                $SUDO_CMD usermod -aG docker "$SUDO_USER" || true
-            elif [ "$EUID" -ne 0 ]; then
-                $SUDO_CMD usermod -aG docker "$USER" || true
-            fi
-            $SUDO_CMD systemctl enable --now docker 2>/dev/null || $SUDO_CMD service docker start 2>/dev/null || true
-            log_success "Docker installed successfully."
+        if [ "$DRY_RUN" = true ]; then
+            log_info "[DRY-RUN] Docker not found; simulating active Docker Engine for configuration audit."
         else
-            log_error "Docker is required to run Ente. Please install Docker and re-run this script."
-            exit 1
+            log_warn "Docker is not installed on this machine."
+            if [ "$UNATTENDED" = true ]; then
+                INSTALL_DOCKER_CHOICE="Y"
+                log_info "[Unattended] Automatically installing official Docker & Compose..."
+            else
+                read -rp "Would you like this script to install official Docker & Compose automatically? [Y/n]: " INSTALL_DOCKER_CHOICE
+                INSTALL_DOCKER_CHOICE=${INSTALL_DOCKER_CHOICE:-Y}
+            fi
+            if [[ "$INSTALL_DOCKER_CHOICE" =~ ^[Yy]$ ]]; then
+                log_info "Downloading and running official Docker install script..."
+                curl -fsSL https://get.docker.com | $SUDO_CMD sh
+                if [ -n "$SUDO_USER" ]; then
+                    $SUDO_CMD usermod -aG docker "$SUDO_USER" || true
+                elif [ "$EUID" -ne 0 ]; then
+                    $SUDO_CMD usermod -aG docker "$USER" || true
+                fi
+                $SUDO_CMD systemctl enable --now docker 2>/dev/null || $SUDO_CMD service docker start 2>/dev/null || true
+                log_success "Docker installed successfully."
+            else
+                log_error "Docker is required to run Ente. Please install Docker and re-run this script."
+                exit 1
+            fi
         fi
     fi
 
     # Check Docker Daemon Connectivity
     if ! docker info >/dev/null 2>&1; then
-        if $SUDO_CMD docker info >/dev/null 2>&1; then
+        if [ -n "$SUDO_CMD" ] && $SUDO_CMD docker info >/dev/null 2>&1; then
             log_info "Current user needs sudo for docker. Adding user to docker group..."
             $SUDO_CMD usermod -aG docker "$USER" || true
             DOCKER_PREFIX="$SUDO_CMD "
+        elif [ "$DRY_RUN" = true ]; then
+            log_info "[DRY-RUN] Docker daemon offline or mock environment; continuing dry-run audit."
+            DOCKER_PREFIX=""
         else
             log_error "Docker daemon is not running. Start it with: sudo systemctl start docker"
             exit 1
@@ -241,8 +261,13 @@ preflight_audit() {
     if [ -n "$EXISTING_CONTAINERS" ]; then
         log_warn "Detected existing Ente container(s) from a previous deployment:"
         echo "$EXISTING_CONTAINERS" | sed 's/^/    • /'
-        read -rp "Would you like this script to stop and remove these conflicting containers? [Y/n]: " CLEANUP_CHOICE
-        CLEANUP_CHOICE=${CLEANUP_CHOICE:-Y}
+        if [ "$UNATTENDED" = true ]; then
+            CLEANUP_CHOICE="Y"
+            log_info "[Unattended] Automatically stopping and removing conflicting containers..."
+        else
+            read -rp "Would you like this script to stop and remove these conflicting containers? [Y/n]: " CLEANUP_CHOICE
+            CLEANUP_CHOICE=${CLEANUP_CHOICE:-Y}
+        fi
         if [[ "$CLEANUP_CHOICE" =~ ^[Yy]$ ]]; then
             log_info "Stopping and removing conflicting containers..."
             echo "$EXISTING_CONTAINERS" | xargs -r $DOCKER_PREFIX docker rm -f >> "$ACTIVE_LOG_FILE" 2>&1 || true
@@ -255,6 +280,20 @@ preflight_audit() {
     # 8. Firewall Check (UFW / firewalld)
     if command -v ufw >/dev/null 2>&1 && sudo ufw status 2>/dev/null | grep -qw "active"; then
         log_info "UFW firewall is active. Remember to allow your allocated ports (e.g. sudo ufw allow <PORT>) for remote access."
+    fi
+
+    # 9. SELinux & Container Volume Context Check
+    SELINUX_VOLUME_SUFFIX=""
+    if command -v getenforce >/dev/null 2>&1 && [ "$(getenforce 2>/dev/null)" = "Enforcing" ]; then
+        SELINUX_VOLUME_SUFFIX=":z"
+        log_info "SELinux Enforcing mode detected: Enabling volume label context (:z) for container access."
+    fi
+
+    # 10. Kernel IPv6 State Check
+    KERNEL_IPV6_DISABLED=false
+    if [ -f "/proc/sys/net/ipv4/ip_forward" ] && [ ! -d "/proc/sys/net/ipv6" ]; then
+        KERNEL_IPV6_DISABLED=true
+        log_info "Host kernel has IPv6 disabled at boot; skipping container IPv6 sysctl."
     fi
 }
 
@@ -350,13 +389,23 @@ configure_topology() {
     log_step "Step 3: Configuration Wizard & Network Topology"
 
     # 1. Target Directory
-    DEFAULT_DIR="$HOME/ente"
-    read -rp "Enter target installation folder [default: ${DEFAULT_DIR}]: " USER_DIR
-    TARGET_DIR="${USER_DIR:-$DEFAULT_DIR}"
+    DEFAULT_DIR="${CLI_TARGET_DIR:-$HOME/ente}"
+    if [ "$UNATTENDED" = true ]; then
+        TARGET_DIR="$DEFAULT_DIR"
+        log_info "[Unattended] Target installation folder: $TARGET_DIR"
+    else
+        read -rp "Enter target installation folder [default: ${DEFAULT_DIR}]: " USER_DIR
+        TARGET_DIR="${USER_DIR:-$DEFAULT_DIR}"
+    fi
     TARGET_DIR="${TARGET_DIR/#\~/$HOME}" # Expand tilde if typed
+    TARGET_DIR="${TARGET_DIR%/}" # Strip trailing slash
 
     # Safe Guard: Explicitly warn user if an existing active installation is detected
     if [ -f "$TARGET_DIR/credentials.env" ] && [ -f "$TARGET_DIR/compose.yaml" ]; then
+        if [ "$UNATTENDED" = true ]; then
+            log_info "[Unattended] Existing Ente deployment detected in $TARGET_DIR. Aborting safely to prevent overwriting active instance."
+            exit 0
+        fi
         echo -e "\n${YELLOW}${BOLD}════════════════════════════════════════════════════════════════════════${NC}"
         echo -e "${YELLOW}${BOLD}      ⚠ WARNING: EXISTING ENTE DEPLOYMENT DETECTED!                    ${NC}"
         echo -e "${YELLOW}${BOLD}════════════════════════════════════════════════════════════════════════${NC}"
@@ -380,11 +429,25 @@ configure_topology() {
 
     # Edge-Case Protection: Prevent PostgreSQL password mismatch / dirty migration locks from previous runs
     PRESERVE_EXISTING_SECRETS=false
-    if [ -d "$TARGET_DIR/pg_data" ] && [ -n "$(ls -A "$TARGET_DIR/pg_data" 2>/dev/null)" ]; then
+    HAS_EXISTING_PG_FILES=false
+    if [ -d "$TARGET_DIR/pg_data" ]; then
+        if [ -n "$(ls -A "$TARGET_DIR/pg_data" 2>/dev/null)" ] || \
+           { [ -n "$SUDO_CMD" ] && [ -n "$($SUDO_CMD ls -A "$TARGET_DIR/pg_data" 2>/dev/null || true)" ]; } || \
+           [ -f "$TARGET_DIR/credentials.env" ]; then
+            HAS_EXISTING_PG_FILES=true
+        fi
+    fi
+
+    if [ "$HAS_EXISTING_PG_FILES" = true ]; then
         log_warn "Detected existing database files in $TARGET_DIR/pg_data."
         echo -e "  If this is from a previous failed setup, old passwords or dirty migrations will block startup."
-        read -rp "Is this an active production database you want to keep? [y/N]: " KEEP_DB
-        KEEP_DB=${KEEP_DB:-N}
+        if [ "$UNATTENDED" = true ]; then
+            KEEP_DB="Y"
+            log_info "[Unattended] Preserving existing database and credentials."
+        else
+            read -rp "Is this an active production database you want to keep? [y/N]: " KEEP_DB
+            KEEP_DB=${KEEP_DB:-N}
+        fi
         if [[ ! "$KEEP_DB" =~ ^[Yy]$ ]]; then
             BACKUP_TS=$(date +%Y%m%d_%H%M%S)
             BACKUP_FOLDER="$TARGET_DIR/pg_data_backup_$BACKUP_TS"
@@ -418,15 +481,28 @@ configure_topology() {
     AUTO_LAN_IP="${AUTO_LAN_IP:-127.0.0.1}"
     AUTO_LAN_IP=$(echo "$AUTO_LAN_IP" | tr -d '[:space:]')
 
-    echo -e "\nChoose how you plan to access your Ente instance:"
-    echo -e "  ${BOLD}[1] Local Network / Private Homelab${NC} (IP: ${AUTO_LAN_IP})"
-    echo -e "  ${BOLD}[2] Public Domain / Reverse Proxy${NC} (Cloudflare Tunnel, Caddy, Nginx with HTTPS)"
-    read -rp "Select option [1/2, default: 1]: " NET_CHOICE
-    NET_CHOICE=${NET_CHOICE:-1}
+    if [ "$UNATTENDED" = true ]; then
+        if [ -n "$CLI_DOMAIN" ]; then
+            NET_CHOICE=2
+            ROOT_DOMAIN="$CLI_DOMAIN"
+            log_info "[Unattended] Configured for Domain Mode: $ROOT_DOMAIN"
+        else
+            NET_CHOICE=1
+            log_info "[Unattended] Configured for Local Network Mode (LAN IP: ${AUTO_LAN_IP})"
+        fi
+    else
+        echo -e "\nChoose how you plan to access your Ente instance:"
+        echo -e "  ${BOLD}[1] Local Network / Private Homelab${NC} (IP: ${AUTO_LAN_IP})"
+        echo -e "  ${BOLD}[2] Public Domain / Reverse Proxy${NC} (Cloudflare Tunnel, Caddy, Nginx with HTTPS)"
+        read -rp "Select option [1/2, default: 1]: " NET_CHOICE
+        NET_CHOICE=${NET_CHOICE:-1}
+    fi
 
     if [ "$NET_CHOICE" -eq 2 ]; then
         MODE="DOMAIN"
-        read -rp "Enter your primary root domain for Ente (e.g., example.com): " ROOT_DOMAIN
+        if [ "$UNATTENDED" = false ]; then
+            read -rp "Enter your primary root domain for Ente (e.g., example.com): " ROOT_DOMAIN
+        fi
         ROOT_DOMAIN=$(echo "$ROOT_DOMAIN" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
         ROOT_DOMAIN=${ROOT_DOMAIN#https://}
         ROOT_DOMAIN=${ROOT_DOMAIN#http://}
@@ -434,19 +510,24 @@ configure_topology() {
         ROOT_DOMAIN=${ROOT_DOMAIN#.}
         ROOT_DOMAIN=${ROOT_DOMAIN%.}
 
-        echo -e "\n${BOLD}Select Subdomain Naming Convention:${NC}"
-        echo -e "  ${BOLD}[1] Branded / Unique (Recommended)${NC}"
-        echo -e "      • Web Gallery:   ${CYAN}https://entephotos.${ROOT_DOMAIN}${NC}"
-        echo -e "      • Core API:      ${CYAN}https://enteapi.${ROOT_DOMAIN}${NC}"
-        echo -e "      • S3 Storage:    ${CYAN}https://entes3.${ROOT_DOMAIN}${NC}"
-        echo -e "      ${BOLD}Notice:${NC} Prevents collisions with existing or future services on your domain.\n"
-        echo -e "  ${BOLD}[2] Minimalist / Generic${NC}"
-        echo -e "      • Web Gallery:   https://photos.${ROOT_DOMAIN}"
-        echo -e "      • Core API:      https://api.${ROOT_DOMAIN}"
-        echo -e "      • S3 Storage:    https://s3.${ROOT_DOMAIN}\n"
-        echo -e "  ${BOLD}[3] Custom Subdomains${NC} (Manually specify each URL)"
-        read -rp "Select option [1/2/3, default: 1]: " SUB_CHOICE
-        SUB_CHOICE=${SUB_CHOICE:-1}
+        if [ "$UNATTENDED" = true ]; then
+            SUB_CHOICE=1
+            log_info "[Unattended] Using default branded subdomain naming convention."
+        else
+            echo -e "\n${BOLD}Select Subdomain Naming Convention:${NC}"
+            echo -e "  ${BOLD}[1] Branded / Unique (Recommended)${NC}"
+            echo -e "      • Web Gallery:   ${CYAN}https://entephotos.${ROOT_DOMAIN}${NC}"
+            echo -e "      • Core API:      ${CYAN}https://enteapi.${ROOT_DOMAIN}${NC}"
+            echo -e "      • S3 Storage:    ${CYAN}https://entes3.${ROOT_DOMAIN}${NC}"
+            echo -e "      ${BOLD}Notice:${NC} Prevents collisions with existing or future services on your domain.\n"
+            echo -e "  ${BOLD}[2] Minimalist / Generic${NC}"
+            echo -e "      • Web Gallery:   https://photos.${ROOT_DOMAIN}"
+            echo -e "      • Core API:      https://api.${ROOT_DOMAIN}"
+            echo -e "      • S3 Storage:    https://s3.${ROOT_DOMAIN}\n"
+            echo -e "  ${BOLD}[3] Custom Subdomains${NC} (Manually specify each URL)"
+            read -rp "Select option [1/2/3, default: 1]: " SUB_CHOICE
+            SUB_CHOICE=${SUB_CHOICE:-1}
+        fi
 
         if [ "$SUB_CHOICE" -eq 1 ]; then
             WEB_DOMAIN="entephotos.${ROOT_DOMAIN}"
@@ -577,8 +658,13 @@ configure_topology() {
             echo -e "        can reach Ente using your LAN IP (${AUTO_LAN_IP}).\n"
         fi
 
-        read -rp "Bind ports to 127.0.0.1 (Y) or 0.0.0.0 (n)? [Y/n, default: ${DEFAULT_PROXY_CHOICE}]: " LOCAL_PROXY_CHOICE
-        LOCAL_PROXY_CHOICE=${LOCAL_PROXY_CHOICE:-$DEFAULT_PROXY_CHOICE}
+        if [ "$UNATTENDED" = true ]; then
+            LOCAL_PROXY_CHOICE="$DEFAULT_PROXY_CHOICE"
+            log_info "[Unattended] Reverse proxy port isolation choice: $LOCAL_PROXY_CHOICE"
+        else
+            read -rp "Bind ports to 127.0.0.1 (Y) or 0.0.0.0 (n)? [Y/n, default: ${DEFAULT_PROXY_CHOICE}]: " LOCAL_PROXY_CHOICE
+            LOCAL_PROXY_CHOICE=${LOCAL_PROXY_CHOICE:-$DEFAULT_PROXY_CHOICE}
+        fi
         if [[ "$LOCAL_PROXY_CHOICE" =~ ^[Yy]$ ]]; then
             PORT_BIND_PREFIX="127.0.0.1:"
             log_success "High-Security Mode: Host ports isolated to localhost (127.0.0.1)"
@@ -595,7 +681,12 @@ configure_topology() {
     else
         MODE="LAN"
         PORT_BIND_PREFIX=""
-        read -rp "Enter your server's reachable LAN IP [default: ${AUTO_LAN_IP}]: " INPUT_IP
+        if [ "$UNATTENDED" = true ]; then
+            INPUT_IP="$AUTO_LAN_IP"
+            log_info "[Unattended] Using auto-detected reachable LAN IP: $INPUT_IP"
+        else
+            read -rp "Enter your server's reachable LAN IP [default: ${AUTO_LAN_IP}]: " INPUT_IP
+        fi
         SERVER_IP="${INPUT_IP:-$AUTO_LAN_IP}"
         SERVER_IP=$(echo "$SERVER_IP" | tr -d '[:space:]')
         SERVER_IP="${SERVER_IP:-127.0.0.1}"
@@ -650,7 +741,10 @@ allocate_storage_quota() {
     echo -e "  ${YELLOW}Notice:${NC} Setting a safe limit leaves remaining disk protected for OS, logs, and Docker."
 
     local quota_input
-    if [ "$UNATTENDED" = true ] || [ "$DRY_RUN" = true ]; then
+    if [ -n "$CLI_QUOTA" ]; then
+        quota_input="$CLI_QUOTA"
+        log_info "Applying user-specified quota: ${quota_input}"
+    elif [ "$UNATTENDED" = true ] || [ "$DRY_RUN" = true ]; then
         quota_input="${rounded_gb}GB"
         log_info "[Unattended/Dry-Run] Applying default quota: ${quota_input}"
     else
@@ -810,14 +904,19 @@ jwt:
 EOF
     chmod 600 "$TARGET_DIR/museum.yaml"
 
+    IPV6_SYSCTL_SNIPPET=""
+    if [ "${KERNEL_IPV6_DISABLED:-false}" = false ]; then
+        IPV6_SYSCTL_SNIPPET="    sysctls:
+      net.ipv6.conf.all.disable_ipv6: 1"
+    fi
+
     cat <<EOF > "$TARGET_DIR/compose.yaml"
 services:
   museum:
     image: ghcr.io/ente/server
     container_name: ente-museum
     restart: unless-stopped
-    sysctls:
-      net.ipv6.conf.all.disable_ipv6: 1
+${IPV6_SYSCTL_SNIPPET}
     ports:
       - "${PORT_BIND_PREFIX}${API_PORT}:8080"
     depends_on:
@@ -869,7 +968,7 @@ services:
       retries: 20
       start_period: 60s
     volumes:
-      - ./pg_data:/var/lib/postgresql/data
+      - ./pg_data:/var/lib/postgresql/data${SELINUX_VOLUME_SUFFIX:-}
 
   minio:
     image: pgsty/silo
@@ -882,7 +981,7 @@ services:
       MINIO_ROOT_PASSWORD: "${MINIO_PASS}"
     command: server /data --address ":3200" --console-address ":3201"
     volumes:
-      - ./minio_data:/data
+      - ./minio_data:/data${SELINUX_VOLUME_SUFFIX:-}
     post_start:
       - command: |
           sh -c '
@@ -1072,8 +1171,24 @@ if ! docker info >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
     DOCKER_BIN="sudo docker"
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TARGET_BYTES=""
+if [ -f "$SCRIPT_DIR/credentials.env" ]; then
+    TARGET_BYTES=$(grep "^ENTE_QUOTA_BYTES=" "$SCRIPT_DIR/credentials.env" 2>/dev/null | cut -d'=' -f2- | tr -d '\r\n"')
+fi
+TARGET_BYTES=${TARGET_BYTES:-504658657280}
+
+# Co-operative Auto-Quota Upgrade: Check if registered user is still at default free plan (<= 10 GB)
+PENDING_USER=$($DOCKER_BIN exec -i ente-postgres psql -U pguser -d ente_db -tAc \
+  "SELECT user_id FROM subscriptions WHERE storage <= 10737418240 LIMIT 1;" 2>/dev/null || true)
+PENDING_USER=$(echo "$PENDING_USER" | tr -d '[:space:]')
+if [[ "$PENDING_USER" =~ ^[0-9]+$ ]] && [ "$PENDING_USER" -gt 0 ] 2>/dev/null; then
+    $DOCKER_BIN exec -i ente-postgres psql -U pguser -d ente_db -c \
+      "UPDATE subscriptions SET storage = $TARGET_BYTES WHERE user_id = $PENDING_USER;" >/dev/null 2>&1 || true
+fi
+
 echo "Fetching latest Ente email verification codes..."
-$DOCKER_BIN logs --tail 60 ente-museum 2>&1 | grep -i "code" || echo "No verification codes logged in recent output."
+$DOCKER_BIN logs --tail 200 ente-museum 2>&1 | grep -i "code" || echo "No verification codes logged in recent output."
 EOF
     chmod +x "$TARGET_DIR/get-otp.sh"
 
@@ -1286,30 +1401,66 @@ print_summary() {
 # Main Flow
 # ------------------------------------------------------------------------------
 main() {
-    # If running piped from curl/wget into bash (e.g. curl | bash), reconnect stdin to terminal if interactive
-    if [ ! -t 0 ] && [ -t 1 ] && [ -r /dev/tty ]; then
-        exec </dev/tty
-    fi
-
     DRY_RUN=false
     UNATTENDED=false
-    for arg in "$@"; do
-        case "$arg" in
+    CLI_TARGET_DIR="${ENTE_DIR:-}"
+    CLI_DOMAIN="${ENTE_DOMAIN:-}"
+    CLI_QUOTA="${ENTE_QUOTA:-}"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
             --dry-run|-d)
                 DRY_RUN=true
+                shift
                 ;;
             --unattended|-y)
                 UNATTENDED=true
+                shift
+                ;;
+            --dir)
+                CLI_TARGET_DIR="$2"
+                shift 2
+                ;;
+            --dir=*)
+                CLI_TARGET_DIR="${1#*=}"
+                shift
+                ;;
+            --domain)
+                CLI_DOMAIN="$2"
+                shift 2
+                ;;
+            --domain=*)
+                CLI_DOMAIN="${1#*=}"
+                shift
+                ;;
+            --quota)
+                CLI_QUOTA="$2"
+                shift 2
+                ;;
+            --quota=*)
+                CLI_QUOTA="${1#*=}"
+                shift
                 ;;
             --help|-h)
-                echo "Usage: ./install.sh [--dry-run] [--unattended]"
+                echo "Usage: ./install.sh [OPTIONS]"
+                echo "Options:"
                 echo "  --dry-run, -d       Validate system, allocate ports, and generate all configs without downloading images"
                 echo "  --unattended, -y    Run non-interactively using safe defaults"
+                echo "  --dir <PATH>        Set target installation directory (default: ~/ente)"
+                echo "  --domain <DOMAIN>   Set primary domain for reverse proxy / Cloudflare Tunnel"
+                echo "  --quota <SIZE|PCT>  Set storage quota (e.g. 60%, 500GB, 2TB)"
                 echo "  --help, -h          Show this help message"
                 exit 0
                 ;;
+            *)
+                shift
+                ;;
         esac
     done
+
+    # If running piped from curl/wget into bash (e.g. curl | bash), reconnect stdin to terminal if interactive
+    if [ "$UNATTENDED" = false ] && [ ! -t 0 ] && [ -t 1 ] && [ -r /dev/tty ]; then
+        exec </dev/tty 2>/dev/null || true
+    fi
 
     print_banner
     if [ "$DRY_RUN" = true ]; then

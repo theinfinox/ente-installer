@@ -82,16 +82,18 @@ chmod +x install.sh
 > ```
 
 ### What `install.sh` Does Automatically:
-* **Operating System & Architecture Check:** Strictly verifies Linux (including WSL2 on Windows); cleanly rejects native Windows shells (Git Bash / MSYS) with actionable guidance.
+* **Operating System & Architecture Check:** Strictly verifies Linux (including WSL2 on Windows); cleanly rejects native Windows shells (Git Bash / MSYS) with actionable guidance. Auto-re-executes in `bash` if launched via `sh` or `dash`.
 * **Pre-Flight Hardware, Disk & Port Auditing:** Checks architecture, available RAM and disk space (warns if < 3 GB free), auto-installs Docker/Compose if missing (with user approval), and scans ports to avoid collisions (e.g. automatically moving Web UI from contested `:3000` to `:3004`).
-* **Container Conflict & Database Desync Prevention:** Detects existing `ente-*` containers and old database folders; prompts to safely clean up or backup to eliminate container name collisions and password desyncs.
+* **Container Conflict & Database Desync Prevention:** Detects existing `ente-*` containers and old database folders; audits permissions and prompts to safely clean up or backup to eliminate container name collisions and password desyncs.
 * **Self-Healing Migration Watchdog:** Detects and clears interrupted "dirty" migration flags (`schema_migrations.dirty = true`) on the fly, resuming startup automatically.
 * **Network & Domain Sanitization:** Warns against using `127.0.0.1` loopback in LAN mode, sanitizes user domain input (stripping schemes, slashes, and whitespace), and detects active host firewalls (UFW).
+* **SELinux & Kernel State Awareness:** Dynamically detects SELinux `Enforcing` mode to append `:z` volume contexts on RHEL/Fedora/Rocky/AlmaLinux, and verifies kernel IPv6 status to prevent container boot crashes on IPv6-disabled hosts.
 * **Cryptographic Vault:** Generates high-entropy secrets and stores them in `credentials.env` (`chmod 600`).
 * **Zero-Lock Database Boot:** Applies the hardened Postgres healthcheck parameters (`start_period: 60s`, `retries: 20`) to eliminate the "dirty migration" lock.
-* **Personal Self-Hosted Storage Uncapping:** Launches a background watcher that automatically boosts your account to **10 TB** (matching your physical drive capacity) upon signup.
+* **Dynamic Safe Storage Quota:** Prompts for percentage of available disk space (defaulting to 60%, rounded up to nearest multiple of 10) to preserve critical OS headroom, with co-operative fallback verification in `./get-otp.sh`.
 * **Sudo-Aware Helper Tools:** Creates `./get-otp.sh`, `./set-quota.sh <SIZE>`, and `./reconfigure.sh` in your install directory, automatically detecting Docker permissions.
 * **Existing Deployment Safeguard:** If an active Ente instance is detected in the target directory, it warns you explicitly and offers to launch `./reconfigure.sh` instead of overwriting existing credentials.
+* **Unattended Automation Support:** Supports `--unattended` (or `-y`), `--dir <PATH>`, `--domain <DOMAIN>`, and `--quota <SIZE|PCT>` for zero-prompt headless setups (Ansible, cloud-init, CI/CD).
 * **Reverse Proxy Snippets:** Generates ready-to-use Caddy and Cloudflare Zero Trust configurations if a domain is specified.
 * **Full Audit Logging:** Records every command, system metric, and container diagnostic trace to `ente-installer.log` for instant troubleshooting.
 

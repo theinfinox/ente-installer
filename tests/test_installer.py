@@ -82,6 +82,8 @@ def main():
     if otp_match:
         code, out, err = run_bash_code(f"bash -n << 'EOF'\n{otp_match.group(1)}\nEOF")
         assert_test("get-otp.sh passes bash syntax check", code == 0, err)
+        assert_test("get-otp.sh contains auto-upgrade query for pending users", "UPDATE subscriptions SET storage = $TARGET_BYTES" in otp_match.group(1))
+        assert_test("get-otp.sh uses expanded --tail 200 buffer", "--tail 200" in otp_match.group(1))
 
     # Extract set-quota.sh template
     quota_match = re.search(r"cat <<'EOF' > \"\$TARGET_DIR/set-quota\.sh\"\n(.*?)\nEOF", content, re.DOTALL)
@@ -241,6 +243,9 @@ echo "$ROUNDED_GB"
             "${MINIO_PASS}": "test-minio-pass",
             "${API_ORIGIN}": "http://192.168.1.50:8080",
             "${ALBUMS_ORIGIN}": "http://192.168.1.50:3002",
+            "${IPV6_SYSCTL_SNIPPET}": "    sysctls:\n      net.ipv6.conf.all.disable_ipv6: 1",
+            "${SELINUX_VOLUME_SUFFIX:-}": "",
+            "${SELINUX_VOLUME_SUFFIX}": "",
         }
         for k, v in replacements.items():
             subbed_compose = subbed_compose.replace(k, v)
@@ -342,6 +347,14 @@ echo "$clean_msg"
     assert_test("reconfigure.sh contains DNS Pre-Flight validation logic", "Performing DNS Pre-Flight validation" in reconfig_content)
     assert_test("install.sh contains Cloudflare Zero Trust Ingress Checklist", "Cloudflare Zero Trust Ingress Checklist" in content)
     assert_test("reconfigure.sh contains Cloudflare Zero Trust Ingress Checklist", "Cloudflare Zero Trust Ingress Checklist" in reconfig_content)
+    assert_test("install.sh contains shell auto-wrapper for non-bash shells", 'if [ -z "$BASH_VERSION" ]; then' in content)
+    assert_test("reconfigure.sh contains shell auto-wrapper for non-bash shells", 'if [ -z "$BASH_VERSION" ]; then' in reconfig_content)
+    assert_test("install.sh checks SELinux Enforcing mode", 'getenforce' in content and 'SELINUX_VOLUME_SUFFIX' in content)
+    assert_test("reconfigure.sh checks SELinux Enforcing mode", 'getenforce' in reconfig_content and 'SELINUX_VOLUME_SUFFIX' in reconfig_content)
+    assert_test("install.sh checks kernel IPv6 disabled state", 'KERNEL_IPV6_DISABLED' in content)
+    assert_test("reconfigure.sh checks kernel IPv6 disabled state", 'IPV6_SYSCTL_SNIPPET' in reconfig_content)
+    assert_test("install.sh supports CLI flags --dir, --domain, --quota", '--dir' in content and '--domain' in content and '--quota' in content)
+    assert_test("install.sh checks existing pg_data with elevated fallback", 'HAS_EXISTING_PG_FILES' in content)
 
     # Test dry-run reconfiguration on a simulated active deployment (LAN Mode)
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -648,6 +661,25 @@ assert 'region: eu-central-2' in text
 """
     code, out, err = run_bash_code(s3_region_script)
     assert_test("reconfigure.sh standardizes all bucket regions to eu-central-2", code == 0)
+
+    # 8.10 Non-interactive Unattended Mode Dry-Run Verification
+    with tempfile.TemporaryDirectory() as temp_install_dir:
+        test_unattended_cmd = f"bash '{script_path}' --dry-run --unattended --dir '{temp_install_dir}' --quota 50GB"
+        code, out, err = run_bash_code(test_unattended_cmd)
+        assert_test("install.sh executes cleanly in unattended dry-run mode without prompts", code == 0, err)
+        assert_test("unattended dry-run generated compose.yaml", os.path.exists(os.path.join(temp_install_dir, "compose.yaml")))
+        assert_test("unattended dry-run generated museum.yaml", os.path.exists(os.path.join(temp_install_dir, "museum.yaml")))
+        assert_test("unattended dry-run generated credentials.env", os.path.exists(os.path.join(temp_install_dir, "credentials.env")))
+
+    # 8.11 Non-interactive Domain Mode with Custom Domain Flag
+    with tempfile.TemporaryDirectory() as temp_domain_dir:
+        test_domain_cmd = f"bash '{script_path}' --dry-run --unattended --dir '{temp_domain_dir}' --domain 'myhomelab.org' --quota 60%"
+        code, out, err = run_bash_code(test_domain_cmd)
+        assert_test("install.sh accepts --domain in unattended mode and generates configs", code == 0, err)
+        if os.path.exists(os.path.join(temp_domain_dir, "credentials.env")):
+            with open(os.path.join(temp_domain_dir, "credentials.env")) as f:
+                domain_creds = f.read()
+            assert_test("unattended domain mode configured entephotos subdomain", "WEB_ORIGIN=https://entephotos.myhomelab.org" in domain_creds)
 
     # -------------------------------------------------------------------------
     # Final Report
