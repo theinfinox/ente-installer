@@ -1,30 +1,70 @@
-# The Fail-Safe Guide to Self-Hosting Ente (Photos & Auth)
+# Ente Fail-Safe Self-Hosted Installer
 
-> **Goal:** A complete, production-hardened guide to self-hosting **Ente** (an end-to-end encrypted, zero-knowledge alternative to Google Photos and Apple Photos).  
-> Designed to be **100% fail-safe**: every known race condition, database migration lock, CORS issue, S3 endpoint mismatch, and port collision is prevented by design.
+> An automated, production-hardened installer and management suite for **Ente Photos & Auth**.  
+> Designed to eliminate every known initialization race condition, mobile S3 upload loop, and port collision by design.
+
+---
+
+### Installer Metadata
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![ShellCheck](https://img.shields.io/badge/ShellCheck-Passing-brightgreen.svg)]()
+[![Platform: Linux | WSL2](https://img.shields.io/badge/Platform-Linux%20%7C%20WSL2-orange.svg)]()
+[![Docker Compose: >= 2.28](https://img.shields.io/badge/Docker%20Compose-%3E%3D%20v2.28-2496ED?logo=docker&logoColor=white)]()
+[![GitHub Stars](https://img.shields.io/github/stars/theinfinox/ente-installer?style=flat&color=yellow)](https://github.com/theinfinox/ente-installer/stargazers)
+
+### Upstream Ente Trust & Compatibility
+[![Upstream Project](https://img.shields.io/badge/Upstream-ente%2Fente-10B981?logo=github)](https://github.com/ente/ente)
+[![Official Images](https://img.shields.io/badge/Images-Official%20Ente%20GHCR-8A2BE2)]()
+[![Encryption: Zero-Knowledge](https://img.shields.io/badge/Security-Zero--Knowledge%20E2EE-success)]()
+[![Core License](https://img.shields.io/badge/Core%20License-AGPL--3.0-lightgrey)](https://github.com/ente/ente/blob/main/LICENSE)
+
+---
+
+## What is Ente?
+
+[Ente](https://github.com/ente/ente) is an open-source, end-to-end encrypted (E2EE) cloud storage platform designed as an uncompromised, zero-knowledge alternative to Google Photos and Apple Photos:
+
+* **Client-Side Encryption:** Photos, videos, and album metadata are encrypted on your device using libsodium / XChaCha20-Poly1305 before transmission. The server only stores ciphertext and never sees unencrypted media or master keys.
+* **Native Cross-Platform Apps:** Polished client applications for iOS and Android, desktop clients for Linux, macOS, and Windows, and a modern web gallery.
+* **Zero-Knowledge 2FA Authenticator:** Ente Auth provides end-to-end encrypted two-factor authentication backups across all your devices.
+
+---
+
+## Independent Community Project Notice
+
+> [!NOTE]
+> This repository (`theinfinox/ente-installer`) is an **independent, community-maintained open-source tool** and is **not** officially affiliated with, maintained by, or endorsed by Ente Technologies Inc.
+
+### Relationship to Upstream Ente:
+1. **100% Unmodified Upstream Images:** This installer does not compile, modify, or fork Ente's core application code. It pulls and deploys official, signed container images directly from Ente's GitHub Container Registry (`ghcr.io/ente/server`, `ghcr.io/ente/web`, `pgsty/silo`).
+2. **Infrastructure Hardening Only:** This installer manages the host runtime environment: pre-flight checks, Docker networking, PostgreSQL healthcheck race condition prevention, port collision avoidance, and direct S3 upload routing.
+3. **Upstream First:** Core bug fixes and configuration improvements discovered during development are submitted upstream to [ente/ente](https://github.com/ente/ente) via public pull requests and discussions.
 
 ---
 
 ## Table of Contents
-0. [⚡ Quickest Path: The One-Command Installer (`install.sh`)](#-quickest-path-the-one-command-installer-installsh)
-1. [Architecture & How Ente Works](#1-architecture--how-ente-works)
-2. [Pre-Flight Verification](#2-pre-flight-verification)
-3. [Step 1: Directory Setup](#step-1-directory-setup)
-4. [Step 2: Automated Secret Generation](#step-2-automated-secret-generation)
-5. [Step 3: Configuration Files (`museum.yaml` & `compose.yaml`)](#step-3-configuration-files)
-6. [Step 4: Launching & Verifying the Stack](#step-4-launching--verifying-the-stack)
-7. [Step 5: Account Creation & OTP Retrieval](#step-5-account-creation--otp-retrieval)
-8. [Step 6: Unlocking 10 TB / Unlimited Storage](#step-6-unlocking-10-tb--unlimited-storage)
-9. [Step 7: Remote Access & Mobile Apps (iOS / Android)](#step-7-remote-access--mobile-apps-ios--android)
-10. [Troubleshooting & Emergency Recovery Matrix](#10-troubleshooting--emergency-recovery-matrix)
-11. [Backup, Disaster Recovery & Maintenance Playbook](#11-backup-disaster-recovery--maintenance-playbook)
-12. [Production Security Hardening & LTS Best Practices](#12-production-security-hardening--lts-best-practices)
+* [⚡ Quickest Path: The One-Command Installer (`install.sh`)](#-quickest-path-the-one-command-installer-installsh)
+* [Security & Privacy Statement](#security--privacy-statement)
+* [Safety Guarantees & Safe Execution Model](#safety-guarantees--safe-execution-model)
+* [1. Architecture & How Ente Works](#1-architecture--how-ente-works)
+* [2. Pre-Flight Verification](#2-pre-flight-verification)
+* [Step 1: Directory Setup](#step-1-directory-setup)
+* [Step 2: Automated Secret Generation](#step-2-automated-secret-generation)
+* [Step 3: Configuration Files (`museum.yaml` & `compose.yaml`)](#step-3-configuration-files)
+* [Step 4: Launching & Verifying the Stack](#step-4-launching--verifying-the-stack)
+* [Step 5: Account Creation & OTP Retrieval](#step-5-account-creation--otp-retrieval)
+* [Step 6: Unlocking 10 TB / Unlimited Storage](#step-6-unlocking-10-tb--unlimited-storage)
+* [Step 7: Remote Access & Mobile Apps (iOS / Android)](#step-7-remote-access--mobile-apps-ios--android)
+* [10. Troubleshooting & Emergency Recovery Matrix](#10-troubleshooting--emergency-recovery-matrix)
+* [11. Backup, Disaster Recovery & Maintenance Playbook](#11-backup-disaster-recovery--maintenance-playbook)
+* [12. Production Security Hardening & LTS Best Practices](#12-production-security-hardening--lts-best-practices)
+* [13. Disclaimers, Licensing & Trademark Attribution](#13-disclaimers-licensing--trademark-attribution)
 
 ---
 
 ## ⚡ Quickest Path: The One-Command Installer (`install.sh`)
 
-If you want an automated, fail-safe installation that handles all pre-flight checks, port scanning, secrets generation, race condition prevention, and 10 TB quota allocation automatically, use the bundled installer:
+If you want an automated, fail-safe installation that handles all pre-flight checks, port scanning, secrets generation, race condition prevention, and storage quota allocation automatically, use the installer:
 
 ```bash
 chmod +x install.sh
@@ -45,11 +85,38 @@ chmod +x install.sh
 * **Network & Domain Sanitization:** Warns against using `127.0.0.1` loopback in LAN mode, sanitizes user domain input (stripping schemes, slashes, and whitespace), and detects active host firewalls (UFW).
 * **Cryptographic Vault:** Generates high-entropy secrets and stores them in `credentials.env` (`chmod 600`).
 * **Zero-Lock Database Boot:** Applies the hardened Postgres healthcheck parameters (`start_period: 60s`, `retries: 20`) to eliminate the "dirty migration" lock.
-* **Storage Auto-Upgrade (1-Hour Window):** Launches a background watcher that automatically boosts your account to **10 TB** upon signup.
+* **Personal Self-Hosted Storage Uncapping:** Launches a background watcher that automatically boosts your account to **10 TB** (matching your physical drive capacity) upon signup.
 * **Sudo-Aware Helper Tools:** Creates `./get-otp.sh`, `./set-quota.sh <SIZE>`, and `./reconfigure.sh` in your install directory, automatically detecting Docker permissions.
 * **Existing Deployment Safeguard:** If an active Ente instance is detected in the target directory, it warns you explicitly and offers to launch `./reconfigure.sh` instead of overwriting existing credentials.
 * **Reverse Proxy Snippets:** Generates ready-to-use Caddy and Cloudflare Zero Trust configurations if a domain is specified.
 * **Full Execution Timeline Logging (`ente-installer.log`):** Records every command, system spec, port allocation, Docker pull/up stdout/stderr, and container diagnostic trace to `ente-installer.log` for instant auditing and troubleshooting.
+
+---
+
+## Security & Privacy Statement
+
+This installer adheres to strict privacy and operational security standards:
+
+* **Zero-Knowledge Preservation:** The installer never touches, alters, or intercepts Ente's client-side cryptographic functions. All photo encryption, decryption, and key derivation remain strictly client-side.
+* **Zero Telemetry / No Phone-Home:** The installer contains zero tracking scripts, telemetry, or third-party analytic pings. The only outbound connections made are to:
+  - Official Linux distribution package repositories (if installing Docker with your explicit approval).
+  - GitHub Container Registry and Docker Hub (`ghcr.io`, `docker.io`) to download official container images.
+* **Cryptographic Vault (`credentials.env`):**
+  - Database passwords, MinIO access keys, and JWT secrets are generated locally using `/dev/urandom` and high-entropy byte streams.
+  - Secrets are stored in `credentials.env` with strict `chmod 600` permissions (accessible only by your local host user).
+* **Safe Local Network Routing:** Local IP detection operates completely offline via Linux kernel routing tables (`ip route` / `hostname -I`) without pinging external "what is my IP" web services.
+
+---
+
+## Safety Guarantees & Safe Execution Model
+
+To protect your system and existing data from accidental corruption:
+
+* **Non-Destructive Pre-Flight:** Verifies Docker Compose v2.28+ and hardware resources (RAM, disk space) before writing configuration files.
+* **Container Conflict & Desync Safeguards:** If older `ente-*` containers or existing `./pg_data` volumes are detected, the installer halts and prompts for user confirmation—offering automated timestamped backups (`pg_data_bak_<timestamp>`) to prevent password mismatch desyncs.
+* **Existing Instance Protection:** If run inside an already configured Ente directory, the installer warns you and offers to launch `./reconfigure.sh` instead of overwriting credentials.
+* **Zero-Risk Dry-Run (`./install.sh --dry-run`):** Allows full simulation of port allocations, secret generation, and environment checks without modifying host state or launching containers.
+* **Audit Execution Log (`ente-installer.log`):** Every command, system metric, and container trace is recorded locally for complete transparency.
 
 ---
 
@@ -524,3 +591,32 @@ ports:
   `compose.yaml` is pinned to `postgres:15`. PostgreSQL 15 receives official community security updates and maintenance through **November 11, 2027**.
 * **Docker Compose Requirement:**
   The automated bucket creation hook in `compose.yaml` uses the `post_start` lifecycle feature, which strictly requires **Docker Compose v2.28.0 or newer**. If deploying on an older Linux distribution, ensure your Docker Compose plugin is updated (`docker compose version`).
+
+---
+
+## 13. Disclaimers, Licensing & Trademark Attribution
+
+### Trademarks
+"Ente", the Ente logo, and related marks are trademarks of Ente Technologies Inc. This project is an independent community deployment tool intended to facilitate self-hosting of Ente's open-source server software.
+
+### Software Licenses
+* **Installer & Automation Scripts:** Released under the [MIT License](LICENSE).
+* **Ente Server & Web Applications:** The core Ente software orchestrated by this script is licensed under the [GNU Affero General Public License v3.0 (AGPL-3.0)](https://github.com/ente/ente/blob/main/LICENSE) by Ente Technologies Inc.
+
+### Disclaimer of Warranty
+THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+---
+
+## 13. Disclaimers, Licensing & Trademark Attribution
+
+### Trademarks
+"Ente", the Ente logo, and related marks are trademarks of Ente Technologies Inc. This project is an independent community deployment tool intended to facilitate self-hosting of Ente's open-source server software.
+
+### Software Licenses
+* **Installer & Automation Scripts:** Released under the [MIT License](LICENSE).
+* **Ente Server & Web Applications:** The core Ente software orchestrated by this script is licensed under the [GNU Affero General Public License v3.0 (AGPL-3.0)](https://github.com/ente/ente/blob/main/LICENSE) by Ente Technologies Inc.
+
+### Disclaimer of Warranty
+THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
