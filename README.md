@@ -62,6 +62,9 @@
 * [Troubleshooting & Emergency Recovery Matrix](#troubleshooting--emergency-recovery-matrix)
 * [Backup, Disaster Recovery & Maintenance Playbook](#backup-disaster-recovery--maintenance-playbook)
 * [Production Security Hardening & LTS Best Practices](#production-security-hardening--lts-best-practices)
+* [🚀 Advanced Tweaks: Unlocking App Limits & High-Speed Uploads](#-advanced-tweaks-unlocking-app-limits--high-speed-uploads)
+  * [1. Bypassing the Family Plan Limit (+5 Members)](#1-bypassing-the-family-plan-limit-5-members)
+  * [2. Increasing Concurrent Uploads on Android (Custom APK)](#2-increasing-concurrent-uploads-on-android-custom-apk)
 * [Disclaimers, Licensing & Trademark Attribution](#disclaimers-licensing--trademark-attribution)
 
 ---
@@ -679,6 +682,75 @@ ports:
   `compose.yaml` is pinned to `postgres:15`. PostgreSQL 15 receives official community security updates and maintenance through **November 11, 2027**.
 * **Docker Compose Requirement:**
   The automated bucket creation hook in `compose.yaml` uses the `post_start` lifecycle feature, which strictly requires **Docker Compose v2.28.0 or newer**. If deploying on an older Linux distribution, ensure your Docker Compose plugin is updated (`docker compose version`).
+
+---
+
+## 🚀 Advanced Tweaks: Unlocking App Limits & High-Speed Uploads
+
+While this installer optimizes and hardens the host server environment, power users and large homelabs often look to fine-tune specific built-in application constraints designed for Ente's public cloud. Here is how to safely unlock them on self-hosted instances.
+
+---
+
+### 1. Bypassing the Family Plan Limit (+5 Members)
+
+By default, Ente's server caps family groups at 6 total users (1 Admin + 5 Members) via `maxFamilyMemberLimit = 6` in `server/pkg/controller/family/family.go`.
+
+#### The Direct PostgreSQL Method (No Server Recompile Needed)
+The underlying database schema **does not** enforce this limit. You can bypass the API check and link unlimited family members directly through PostgreSQL:
+
+1. **Find User IDs:**
+   ```bash
+   docker exec -i ente-postgres psql -U pguser -d ente_db -c "SELECT user_id, email, family_admin_id FROM users;"
+   ```
+
+2. **Link Member to Admin:**
+   Execute the following SQL command, replacing `<ADMIN_ID>` and `<MEMBER_ID>` with the respective numerical user IDs:
+   ```bash
+   docker exec -i ente-postgres psql -U pguser -d ente_db -c "
+     UPDATE users SET family_admin_id = <ADMIN_ID> WHERE user_id = <MEMBER_ID>;
+     INSERT INTO family_members (id, admin_id, member_id, status)
+     VALUES (gen_random_uuid(), <ADMIN_ID>, <MEMBER_ID>, 1);
+   "
+   ```
+
+Both the web gallery and mobile apps will immediately recognize the user as an active family member, sharing the admin's unlocked storage pool.
+
+---
+
+### 2. Increasing Concurrent Uploads on Android (Custom APK)
+
+By default, Ente's mobile app caps uploads to **4 concurrent photos** and **2 concurrent videos** in `mobile/lib/utils/file_uploader.dart`.
+
+#### Why This Limit Exists
+Unlike standard cloud storage apps, Ente encrypts every single photo client-side using Libsodium and generates thumbnails in memory before uploading. Running too many simultaneous encryption workers on a mobile phone can cause thermal throttling, heavy battery drain, or process termination by the Android OS. 
+
+However, on a high-speed local Wi-Fi network connecting to a fast self-hosted server, 4 uploads can feel slow during an initial 50,000+ photo library backup.
+
+#### How to Build a Custom APK with Higher Limits
+Because this constant is compiled directly into the Flutter Ahead-of-Time (AOT) binary (`libapp.so`), you can build a custom APK with higher limits:
+
+1. **Fork & Clone the Upstream Repository:**
+   ```bash
+   git clone https://github.com/<your-username>/ente.git
+   cd ente/mobile
+   ```
+
+2. **Edit `mobile/lib/utils/file_uploader.dart`:**
+   Locate line 53 and bump the concurrency constants:
+   ```dart
+   static const kMaximumConcurrentUploads = 8;        // Default: 4
+   static const kMaximumConcurrentVideoUploads = 4;   // Default: 2
+   ```
+
+3. **Compile the APK:**
+   * **Locally via Flutter:**
+     ```bash
+     flutter build apk --release
+     ```
+   * **Or via GitHub Actions (Cloud Build):** Commit the change to your GitHub fork and run the built-in mobile CI workflow to download the compiled `.apk` directly from the Actions artifacts.
+
+4. **Install on Your Phone:**
+   Transfer and install the resulting APK on your Android device.
 
 ---
 
