@@ -89,17 +89,61 @@ get_cred() {
 }
 
 PG_PASS=$(get_cred "PG_PASSWORD")
+if [ -z "$PG_PASS" ] && [ -f "$TARGET_DIR/museum.yaml" ]; then
+    PG_PASS=$(grep -E '^[[:space:]]*password:[[:space:]]*"' "$TARGET_DIR/museum.yaml" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)".*/\1/' || true)
+fi
+
 PG_USER=$(get_cred "PG_USER")
+if [ -z "$PG_USER" ] && [ -f "$TARGET_DIR/museum.yaml" ]; then
+    PG_USER=$(grep -E '^[[:space:]]*user:[[:space:]]*' "$TARGET_DIR/museum.yaml" 2>/dev/null | head -n1 | awk '{print $2}' || true)
+fi
+PG_USER=${PG_USER:-pguser}
+
 PG_DB=$(get_cred "PG_DB")
+if [ -z "$PG_DB" ] && [ -f "$TARGET_DIR/museum.yaml" ]; then
+    PG_DB=$(grep -E '^[[:space:]]*name:[[:space:]]*' "$TARGET_DIR/museum.yaml" 2>/dev/null | head -n1 | awk '{print $2}' || true)
+fi
+PG_DB=${PG_DB:-ente_db}
+
 MINIO_USER=$(get_cred "MINIO_ROOT_USER")
+if [ -z "$MINIO_USER" ] && [ -f "$TARGET_DIR/museum.yaml" ]; then
+    MINIO_USER=$(grep -E '^[[:space:]]*key:[[:space:]]*"' "$TARGET_DIR/museum.yaml" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)".*/\1/' || true)
+fi
+
 MINIO_PASS=$(get_cred "MINIO_ROOT_PASSWORD")
+if [ -z "$MINIO_PASS" ] && [ -f "$TARGET_DIR/museum.yaml" ]; then
+    MINIO_PASS=$(grep -E '^[[:space:]]*secret:[[:space:]]*"' "$TARGET_DIR/museum.yaml" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)".*/\1/' || true)
+fi
+
 KEY_ENC=$(get_cred "MUSEUM_KEY_ENC")
+if [ -z "$KEY_ENC" ] && [ -f "$TARGET_DIR/museum.yaml" ]; then
+    KEY_ENC=$(grep -E '^[[:space:]]*encryption:[[:space:]]*"' "$TARGET_DIR/museum.yaml" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)".*/\1/' || true)
+fi
+
 KEY_HASH=$(get_cred "MUSEUM_KEY_HASH")
+if [ -z "$KEY_HASH" ] && [ -f "$TARGET_DIR/museum.yaml" ]; then
+    KEY_HASH=$(grep -E '^[[:space:]]*hash:[[:space:]]*"' "$TARGET_DIR/museum.yaml" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)".*/\1/' || true)
+fi
+
 JWT_SECRET=$(get_cred "MUSEUM_JWT_SECRET")
+if [ -z "$JWT_SECRET" ] && [ -f "$TARGET_DIR/museum.yaml" ]; then
+    JWT_SECRET=$(awk '/^jwt:/{flag=1; next} flag && /^[[:space:]]*secret:/{print $2; flag=0}' "$TARGET_DIR/museum.yaml" 2>/dev/null | tr -d '"' || true)
+fi
 
 CURRENT_WEB_ORIGIN=$(get_cred "WEB_ORIGIN")
+if [ -z "$CURRENT_WEB_ORIGIN" ] && [ -f "$TARGET_DIR/compose.yaml" ]; then
+    CURRENT_WEB_ORIGIN=$(grep -E 'ENTE_API_ORIGIN:' "$TARGET_DIR/compose.yaml" 2>/dev/null | awk '{print $2}' || true)
+fi
+
 CURRENT_API_ORIGIN=$(get_cred "API_ORIGIN")
+if [ -z "$CURRENT_API_ORIGIN" ] && [ -f "$TARGET_DIR/compose.yaml" ]; then
+    CURRENT_API_ORIGIN=$(grep -E 'ENTE_API_ORIGIN:' "$TARGET_DIR/compose.yaml" 2>/dev/null | awk '{print $2}' || true)
+fi
+
 CURRENT_S3_ENDPOINT=$(get_cred "S3_ENDPOINT")
+if [ -z "$CURRENT_S3_ENDPOINT" ] && [ -f "$TARGET_DIR/museum.yaml" ]; then
+    CURRENT_S3_ENDPOINT=$(grep -E '^[[:space:]]*endpoint:[[:space:]]*"' "$TARGET_DIR/museum.yaml" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)".*/\1/' || true)
+fi
 
 # Extract existing ports from compose.yaml (supports both standard and loopback-bound ports)
 WEB_PORT=$((grep -E '[0-9]+:3000"' "$TARGET_DIR/compose.yaml" 2>/dev/null || true) | sed -E 's/.*[^0-9]([0-9]+):3000".*/\1/' | head -n1)
@@ -262,6 +306,11 @@ s3:
     endpoint: "${S3_ENDPOINT}"
     region: eu-west-1
     bucket: scw-eu-fr-v3
+
+apps:
+  public-albums: ${ALBUMS_ORIGIN}
+  cast: ${WEB_ORIGIN}
+  accounts: ${WEB_ORIGIN}
 
 key:
   encryption: "${KEY_ENC}"
