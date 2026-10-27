@@ -137,6 +137,20 @@ echo "$BYTES"
         code, out, err = run_bash_code(bash_snippet)
         assert_test(f"Quota math for '{unit_str}' = {expected_bytes} bytes", out == str(expected_bytes), f"Got {out}, expected {expected_bytes}")
 
+    # Test percentage quota math
+    pct_snippet = """
+INPUT_SIZE="60%"
+UPPER_SIZE=$(echo "$INPUT_SIZE" | tr '[:lower:]' '[:upper:]')
+if [[ "$UPPER_SIZE" =~ ^([0-9]+)%$ ]]; then
+    PCT=${BASH_REMATCH[1]}
+    TOTAL_KB=1000000
+    BYTES=$(( TOTAL_KB * 1024 * PCT / 100 ))
+fi
+echo "$BYTES"
+"""
+    code, out, err = run_bash_code(pct_snippet)
+    assert_test("Quota percentage math for '60%' calculates correctly", out == str(600000 * 1024))
+
     # -------------------------------------------------------------------------
     # Test 4: YAML Syntax & Semantic Validation (museum.yaml & compose.yaml)
     # -------------------------------------------------------------------------

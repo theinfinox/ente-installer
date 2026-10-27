@@ -1001,7 +1001,21 @@ fi
 
 # Parse Unit
 UPPER_SIZE=$(echo "$INPUT_SIZE" | tr '[:lower:]' '[:upper:]')
-if [[ "$UPPER_SIZE" =~ ^([0-9]+)TB$ ]]; then
+if [[ "$UPPER_SIZE" =~ ^([0-9]+)%FREE$ ]] || [[ "$UPPER_SIZE" =~ ^([0-9]+)%AVAIL$ ]]; then
+    PCT=${BASH_REMATCH[1]}
+    DISK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    AVAIL_KB=$(df -k -P "$DISK_DIR" 2>/dev/null | awk 'NR==2 {print $4}')
+    AVAIL_KB=${AVAIL_KB:-104857600}
+    BYTES=$(( AVAIL_KB * 1024 * PCT / 100 ))
+    echo "Calculated ${PCT}% of available free disk space -> $(( BYTES / 1024 / 1024 / 1024 )) GB ($BYTES bytes)"
+elif [[ "$UPPER_SIZE" =~ ^([0-9]+)%$ ]]; then
+    PCT=${BASH_REMATCH[1]}
+    DISK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    TOTAL_KB=$(df -k -P "$DISK_DIR" 2>/dev/null | awk 'NR==2 {print $2}')
+    TOTAL_KB=${TOTAL_KB:-104857600}
+    BYTES=$(( TOTAL_KB * 1024 * PCT / 100 ))
+    echo "Calculated ${PCT}% of total disk space -> $(( BYTES / 1024 / 1024 / 1024 )) GB ($BYTES bytes)"
+elif [[ "$UPPER_SIZE" =~ ^([0-9]+)TB$ ]]; then
     NUM=${BASH_REMATCH[1]}
     BYTES=$(( NUM * 1024 * 1024 * 1024 * 1024 ))
 elif [[ "$UPPER_SIZE" =~ ^([0-9]+)GB$ ]]; then
@@ -1012,7 +1026,7 @@ elif [[ "$UPPER_SIZE" =~ ^[0-9]+$ ]]; then
     NUM=$UPPER_SIZE
     BYTES=$(( NUM * 1024 * 1024 * 1024 ))
 else
-    echo "Invalid size format: $INPUT_SIZE. Use e.g. 50GB, 500GB, 2TB, 10TB."
+    echo "Invalid size format: $INPUT_SIZE. Use e.g. 60%, 60%free, 50GB, 500GB, 2TB, 10TB."
     exit 1
 fi
 
