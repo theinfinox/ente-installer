@@ -389,12 +389,18 @@ s3:
     endpoint: "127.0.0.1:3200"
 """)
 
-        # Option 2 (Domain), root domain 'ente.example.com', default subdomains (Enter), proxy on same server (Y)
-        reconfig_domain_cmd = f"bash '{reconfig_path}' '{temp_dir_domain}' --dry-run <<< $'2\\nente.example.com\\n\\nY\\n'"
+        # Option 2 (Domain), root domain 'ente.example.com', default branded subdomains (1 or Enter), proxy on same server (Y)
+        reconfig_domain_cmd = f"bash '{reconfig_path}' '{temp_dir_domain}' --dry-run <<< $'2\\nente.example.com\\n1\\nY\\n'"
         code, out, err = run_bash_code(reconfig_domain_cmd)
         assert_test("reconfigure.sh executed successfully in Domain Mode", code == 0, err)
         assert_test("reconfigure.sh Domain Mode displayed Security & Hardening banner", "Security & Hardening Applied" in out)
         assert_test("reconfigure.sh Domain Mode confirmed localhost isolation", "isolated to 127.0.0.1" in out)
+
+        with open(os.path.join(temp_dir_domain, "credentials.env"), "r") as f:
+            cred_env = f.read()
+        assert_test("Domain Mode generated branded entephotos subdomain", "WEB_ORIGIN=https://entephotos.ente.example.com" in cred_env)
+        assert_test("Domain Mode generated branded enteapi subdomain", "API_ORIGIN=https://enteapi.ente.example.com" in cred_env)
+        assert_test("Domain Mode generated branded entes3 subdomain", "S3_ENDPOINT=entes3.ente.example.com" in cred_env)
 
         with open(os.path.join(temp_dir_domain, "compose.yaml"), "r") as f:
             domain_compose = yaml.safe_load(f)
@@ -404,6 +410,16 @@ s3:
         assert_test("Domain Mode bound museum port to 127.0.0.1:8080:8080", "127.0.0.1:8080:8080" in museum_ports_domain)
         assert_test("Domain Mode generated Caddyfile reverse proxy snippet", os.path.exists(os.path.join(temp_dir_domain, "reverse-proxy", "Caddyfile.snippet")))
         assert_test("Domain Mode generated Cloudflare Tunnel ingress guide", os.path.exists(os.path.join(temp_dir_domain, "reverse-proxy", "cloudflare-tunnel.md")))
+
+        # CRLF Immunity Test
+        with open(os.path.join(temp_dir_domain, "museum.yaml"), "wb") as f:
+            f.write(b'jwt:\r\n  secret: "Kf1ljPzrOClqG8rIbdGoCfKEykICpDyf7_R_Raoqzds="\r\nkey:\r\n  encryption: "sb94DVkp3n1HaJRd7P9AdYP+D0V9LCZCEF4OtsZqVfQ="\r\n  hash: "lT7/LNCMyKmPVeSqt4KzzMNFlDUYDwt7s2QCVXOsrPDIY2H9lrlSAdzDXjTwq6SPpoggRkoBoIUgHD7mdJmo/A=="\r\n')
+        crlf_reconfig_cmd = f"bash '{reconfig_path}' '{temp_dir_domain}' --dry-run <<< $'2\\nente.example.com\\n1\\nY\\n'"
+        code, out, err = run_bash_code(crlf_reconfig_cmd)
+        assert_test("reconfigure.sh processes CRLF-polluted museum.yaml without error", code == 0, err)
+        with open(os.path.join(temp_dir_domain, "museum.yaml"), "rb") as f:
+            reconfig_museum_bytes = f.read()
+        assert_test("reconfigure.sh output museum.yaml contains zero carriage returns (CRLF eliminated)", b'\r' not in reconfig_museum_bytes)
 
     # -------------------------------------------------------------------------
     # Test 8: Bare-Minimum System Resilience & Edge-Case Suite

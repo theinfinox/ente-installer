@@ -84,50 +84,54 @@ fi
 echo -e "${GREEN}[✔]${NC} Located active Ente stack at: ${BOLD}${TARGET_DIR}${NC}"
 
 # 2. Safely Load Existing Secrets (Without modifying them)
+[ -f "$TARGET_DIR/museum.yaml" ] && sed -i 's/\r$//' "$TARGET_DIR/museum.yaml" 2>/dev/null || true
+[ -f "$TARGET_DIR/compose.yaml" ] && sed -i 's/\r$//' "$TARGET_DIR/compose.yaml" 2>/dev/null || true
+[ -f "$TARGET_DIR/credentials.env" ] && sed -i 's/\r$//' "$TARGET_DIR/credentials.env" 2>/dev/null || true
+
 get_cred() {
-    (grep "^$1=" "$TARGET_DIR/credentials.env" 2>/dev/null || true) | cut -d'=' -f2- | tr -d '\r\n'
+    (grep "^$1=" "$TARGET_DIR/credentials.env" 2>/dev/null || true) | cut -d'=' -f2- | tr -d '\r\n"'
 }
 
 PG_PASS=$(get_cred "PG_PASSWORD")
 if [ -z "$PG_PASS" ] && [ -f "$TARGET_DIR/museum.yaml" ]; then
-    PG_PASS=$(grep -E '^[[:space:]]*password:[[:space:]]*"' "$TARGET_DIR/museum.yaml" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)".*/\1/' || true)
+    PG_PASS=$(grep -E '^[[:space:]]*password:[[:space:]]*"' "$TARGET_DIR/museum.yaml" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)".*/\1/' | tr -d '\r\n"' || true)
 fi
 
 PG_USER=$(get_cred "PG_USER")
 if [ -z "$PG_USER" ] && [ -f "$TARGET_DIR/museum.yaml" ]; then
-    PG_USER=$(grep -E '^[[:space:]]*user:[[:space:]]*' "$TARGET_DIR/museum.yaml" 2>/dev/null | head -n1 | awk '{print $2}' || true)
+    PG_USER=$(grep -E '^[[:space:]]*user:[[:space:]]*' "$TARGET_DIR/museum.yaml" 2>/dev/null | head -n1 | awk '{print $2}' | tr -d '\r\n"' || true)
 fi
 PG_USER=${PG_USER:-pguser}
 
 PG_DB=$(get_cred "PG_DB")
 if [ -z "$PG_DB" ] && [ -f "$TARGET_DIR/museum.yaml" ]; then
-    PG_DB=$(grep -E '^[[:space:]]*name:[[:space:]]*' "$TARGET_DIR/museum.yaml" 2>/dev/null | head -n1 | awk '{print $2}' || true)
+    PG_DB=$(grep -E '^[[:space:]]*name:[[:space:]]*' "$TARGET_DIR/museum.yaml" 2>/dev/null | head -n1 | awk '{print $2}' | tr -d '\r\n"' || true)
 fi
 PG_DB=${PG_DB:-ente_db}
 
 MINIO_USER=$(get_cred "MINIO_ROOT_USER")
 if [ -z "$MINIO_USER" ] && [ -f "$TARGET_DIR/museum.yaml" ]; then
-    MINIO_USER=$(grep -E '^[[:space:]]*key:[[:space:]]*"' "$TARGET_DIR/museum.yaml" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)".*/\1/' || true)
+    MINIO_USER=$(grep -E '^[[:space:]]*key:[[:space:]]*"' "$TARGET_DIR/museum.yaml" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)".*/\1/' | tr -d '\r\n"' || true)
 fi
 
 MINIO_PASS=$(get_cred "MINIO_ROOT_PASSWORD")
 if [ -z "$MINIO_PASS" ] && [ -f "$TARGET_DIR/museum.yaml" ]; then
-    MINIO_PASS=$(grep -E '^[[:space:]]*secret:[[:space:]]*"' "$TARGET_DIR/museum.yaml" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)".*/\1/' || true)
+    MINIO_PASS=$(grep -E '^[[:space:]]*secret:[[:space:]]*"' "$TARGET_DIR/museum.yaml" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)".*/\1/' | tr -d '\r\n"' || true)
 fi
 
 KEY_ENC=$(get_cred "MUSEUM_KEY_ENC")
 if [ -z "$KEY_ENC" ] && [ -f "$TARGET_DIR/museum.yaml" ]; then
-    KEY_ENC=$(grep -E '^[[:space:]]*encryption:[[:space:]]*"' "$TARGET_DIR/museum.yaml" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)".*/\1/' || true)
+    KEY_ENC=$(grep -E '^[[:space:]]*encryption:[[:space:]]*"' "$TARGET_DIR/museum.yaml" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)".*/\1/' | tr -d '\r\n"' || true)
 fi
 
 KEY_HASH=$(get_cred "MUSEUM_KEY_HASH")
 if [ -z "$KEY_HASH" ] && [ -f "$TARGET_DIR/museum.yaml" ]; then
-    KEY_HASH=$(grep -E '^[[:space:]]*hash:[[:space:]]*"' "$TARGET_DIR/museum.yaml" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)".*/\1/' || true)
+    KEY_HASH=$(grep -E '^[[:space:]]*hash:[[:space:]]*"' "$TARGET_DIR/museum.yaml" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)".*/\1/' | tr -d '\r\n"' || true)
 fi
 
 JWT_SECRET=$(get_cred "MUSEUM_JWT_SECRET")
 if [ -z "$JWT_SECRET" ] && [ -f "$TARGET_DIR/museum.yaml" ]; then
-    JWT_SECRET=$(awk '/^jwt:/{flag=1; next} flag && /^[[:space:]]*secret:/{print $2; flag=0}' "$TARGET_DIR/museum.yaml" 2>/dev/null | tr -d '"' || true)
+    JWT_SECRET=$(awk '/^jwt:/{flag=1; next} flag && /^[[:space:]]*secret:/{print $2; flag=0}' "$TARGET_DIR/museum.yaml" 2>/dev/null | tr -d '\r\n"' || true)
 fi
 
 CURRENT_WEB_ORIGIN=$(get_cred "WEB_ORIGIN")
@@ -189,20 +193,32 @@ elif [ "$NET_CHOICE" -eq 2 ]; then
     ROOT_DOMAIN=${ROOT_DOMAIN#.}
     ROOT_DOMAIN=${ROOT_DOMAIN%.}
 
-    WEB_DOMAIN="photos.${ROOT_DOMAIN}"
-    API_DOMAIN="api.${ROOT_DOMAIN}"
-    S3_DOMAIN="s3.${ROOT_DOMAIN}"
+    echo -e "\n${BOLD}Select Subdomain Naming Convention:${NC}"
+    echo -e "  ${BOLD}[1] Branded / Unique (Recommended)${NC}"
+    echo -e "      • Web Gallery:   ${CYAN}https://entephotos.${ROOT_DOMAIN}${NC}"
+    echo -e "      • Core API:      ${CYAN}https://enteapi.${ROOT_DOMAIN}${NC}"
+    echo -e "      • S3 Storage:    ${CYAN}https://entes3.${ROOT_DOMAIN}${NC}"
+    echo -e "      ${BOLD}Notice:${NC} Prevents collisions with existing or future services on your domain.\n"
+    echo -e "  ${BOLD}[2] Minimalist / Generic${NC}"
+    echo -e "      • Web Gallery:   https://photos.${ROOT_DOMAIN}"
+    echo -e "      • Core API:      https://api.${ROOT_DOMAIN}"
+    echo -e "      • S3 Storage:    https://s3.${ROOT_DOMAIN}\n"
+    echo -e "  ${BOLD}[3] Custom Subdomains${NC} (Manually specify each URL)"
+    read -rp "Select option [1/2/3, default: 1]: " SUB_CHOICE
+    SUB_CHOICE=${SUB_CHOICE:-1}
 
-    echo -e "\nProposed Subdomains:"
-    echo -e "  • Web Gallery:   ${BOLD}https://${WEB_DOMAIN}${NC}"
-    echo -e "  • Core API:      ${BOLD}https://${API_DOMAIN}${NC}"
-    echo -e "  • S3 Storage:    ${BOLD}https://${S3_DOMAIN}${NC}"
-    read -rp "Confirm subdomain schema? [Y/n]: " DOMAIN_CONFIRM
-    DOMAIN_CONFIRM=${DOMAIN_CONFIRM:-Y}
-    if [[ ! "$DOMAIN_CONFIRM" =~ ^[Yy]$ ]]; then
-        read -rp "Enter full Web Gallery URL (e.g. photos.myphotos.com): " WEB_DOMAIN
-        read -rp "Enter full Core API URL (e.g. api.myphotos.com): " API_DOMAIN
-        read -rp "Enter full S3 Storage URL/Host (e.g. s3.myphotos.com): " S3_DOMAIN
+    if [ "$SUB_CHOICE" -eq 1 ]; then
+        WEB_DOMAIN="entephotos.${ROOT_DOMAIN}"
+        API_DOMAIN="enteapi.${ROOT_DOMAIN}"
+        S3_DOMAIN="entes3.${ROOT_DOMAIN}"
+    elif [ "$SUB_CHOICE" -eq 2 ]; then
+        WEB_DOMAIN="photos.${ROOT_DOMAIN}"
+        API_DOMAIN="api.${ROOT_DOMAIN}"
+        S3_DOMAIN="s3.${ROOT_DOMAIN}"
+    else
+        read -rp "Enter full Web Gallery URL (e.g. entephotos.myphotos.com): " WEB_DOMAIN
+        read -rp "Enter full Core API URL (e.g. enteapi.myphotos.com): " API_DOMAIN
+        read -rp "Enter full S3 Storage URL/Host (e.g. entes3.myphotos.com): " S3_DOMAIN
         WEB_DOMAIN=$(echo "$WEB_DOMAIN" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
         WEB_DOMAIN=${WEB_DOMAIN#https://}
         WEB_DOMAIN=${WEB_DOMAIN#http://}
@@ -219,28 +235,74 @@ elif [ "$NET_CHOICE" -eq 2 ]; then
         S3_DOMAIN=${S3_DOMAIN%/}
     fi
 
+    echo -e "\nConfigured Subdomains:"
+    echo -e "  • Web Gallery:   ${BOLD}https://${WEB_DOMAIN}${NC}"
+    echo -e "  • Core API:      ${BOLD}https://${API_DOMAIN}${NC}"
+    echo -e "  • S3 Storage:    ${BOLD}https://${S3_DOMAIN}${NC}"
+
     # Reverse Proxy Network Isolation & Security
     echo -e "\n────────────────────────────────────────────────────────────────────────"
     echo -e "${BOLD}Reverse Proxy Network Isolation & Security:${NC}"
-    echo -e "Where is your reverse proxy (Cloudflare Tunnel, Caddy, Nginx) running?\n"
-    echo -e "  ${BOLD}[Y] On THIS same server${NC} (Recommended)"
-    echo -e "      • Explanation: The Cloudflare Tunnel daemon (cloudflared) or Caddy"
-    echo -e "        runs directly on this machine."
-    echo -e "      • Security Benefit: Binds Ente ports to 127.0.0.1 (localhost only)."
-    echo -e "      • Problem Avoided: Prevents anyone on the public internet from bypassing"
-    echo -e "        your Cloudflare SSL/WAF by accessing your raw IP:PORT directly.\n"
-    echo -e "  ${BOLD}[n] On a SEPARATE machine or VM on your home network${NC}"
-    echo -e "      • Example: An Nginx Proxy Manager or Traefik VM on 192.168.1.10"
-    echo -e "        routing traffic to this Ente server on 192.168.1.50."
-    echo -e "      • Behavior: Binds ports to 0.0.0.0 so your remote proxy can reach Ente.\n"
-    read -rp "Is your reverse proxy running on this same server? [Y/n, default: Y]: " LOCAL_PROXY_CHOICE
-    LOCAL_PROXY_CHOICE=${LOCAL_PROXY_CHOICE:-Y}
+
+    # Intelligent Reverse Proxy Environment Detection
+    DOCKER_PROXY_DETECTED=false
+    DOCKER_PROXY_BRIDGE=false
+    HOST_PROXY_DETECTED=false
+    PROXY_NAME=""
+
+    # 1. Check for Dockerized reverse proxies (Cloudflare Tunnel, Caddy, Traefik, Nginx, NPM)
+    if command -v docker >/dev/null 2>&1; then
+        RUNNING_PROXY=$(docker ps --format '{{.Names}}|{{.Image}}|{{.Networks}}' 2>/dev/null | grep -iE 'cloudflared|caddy|nginx|traefik|npm' | head -n1 || true)
+        if [ -n "$RUNNING_PROXY" ]; then
+            DOCKER_PROXY_DETECTED=true
+            PROXY_NAME=$(echo "$RUNNING_PROXY" | cut -d'|' -f1)
+            PROXY_NET=$(echo "$RUNNING_PROXY" | cut -d'|' -f3)
+            if [ "$PROXY_NET" != "host" ]; then
+                DOCKER_PROXY_BRIDGE=true
+            fi
+        fi
+    fi
+
+    # 2. Check for host-native systemd reverse proxies
+    if [ "$DOCKER_PROXY_DETECTED" = false ] && command -v systemctl >/dev/null 2>&1; then
+        if systemctl is-active cloudflared >/dev/null 2>&1 || systemctl is-active caddy >/dev/null 2>&1 || systemctl is-active nginx >/dev/null 2>&1; then
+            HOST_PROXY_DETECTED=true
+        fi
+    fi
+
+    DEFAULT_PROXY_CHOICE="Y"
+    if [ "$DOCKER_PROXY_BRIDGE" = true ]; then
+        echo -e "  ${YELLOW}Detected Docker reverse proxy container: '${PROXY_NAME}' (Bridge Network)${NC}"
+        echo -e "  ${CYAN}Important Edge Case:${NC} Containers on Docker bridge networks CANNOT reach 127.0.0.1 on the host."
+        echo -e "  To allow '${PROXY_NAME}' to route to Ente via your server IP (${AUTO_LAN_IP}),"
+        echo -e "  ports must remain accessible to local Docker networks (Option [n]).\n"
+        DEFAULT_PROXY_CHOICE="n"
+    elif [ "$DOCKER_PROXY_DETECTED" = true ]; then
+        echo -e "  ${GREEN}Detected Docker reverse proxy container: '${PROXY_NAME}' (Host Network Mode)${NC}"
+        echo -e "  Safe for localhost (127.0.0.1) isolation.\n"
+        DEFAULT_PROXY_CHOICE="Y"
+    elif [ "$HOST_PROXY_DETECTED" = true ]; then
+        echo -e "  ${GREEN}Detected native reverse proxy service running directly on host system.${NC}"
+        echo -e "  Safe for localhost (127.0.0.1) isolation.\n"
+        DEFAULT_PROXY_CHOICE="Y"
+    else
+        echo -e "Where is your reverse proxy (Cloudflare Tunnel, Caddy, Nginx) running?\n"
+        echo -e "  ${BOLD}[Y] On THIS same server (Native host service / --network host)${NC}"
+        echo -e "      • Security: Binds Ente ports to 127.0.0.1 (localhost only)."
+        echo -e "      • Prevents direct raw IP access bypassing Cloudflare SSL.\n"
+        echo -e "  ${BOLD}[n] In a Docker container (Bridge mode) OR separate network machine${NC}"
+        echo -e "      • Behavior: Binds ports to 0.0.0.0 so the container/remote proxy"
+        echo -e "        can reach Ente using your LAN IP (${AUTO_LAN_IP}).\n"
+    fi
+
+    read -rp "Bind ports to 127.0.0.1 (Y) or 0.0.0.0 (n)? [Y/n, default: ${DEFAULT_PROXY_CHOICE}]: " LOCAL_PROXY_CHOICE
+    LOCAL_PROXY_CHOICE=${LOCAL_PROXY_CHOICE:-$DEFAULT_PROXY_CHOICE}
     if [[ "$LOCAL_PROXY_CHOICE" =~ ^[Yy]$ ]]; then
         PORT_BIND_PREFIX="127.0.0.1:"
         echo -e "${GREEN}[✔]${NC} High-Security Mode: Host ports isolated to localhost (127.0.0.1)"
     else
         PORT_BIND_PREFIX=""
-        echo -e "${BLUE}[INFO]${NC} Standard Mode: Host ports bound to 0.0.0.0 for external proxy access"
+        echo -e "${BLUE}[INFO]${NC} Standard Mode: Host ports bound to 0.0.0.0 for container/external proxy access"
     fi
 
     WEB_ORIGIN="https://${WEB_DOMAIN}"
