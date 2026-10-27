@@ -354,7 +354,7 @@ s3:
     key: "${MINIO_USER}"
     secret: "${MINIO_PASS}"
     endpoint: "${S3_ENDPOINT}"
-    region: eu-central-1
+    region: eu-central-2
     bucket: b2-eu-cen
   wasabi-eu-central-2-v3:
     key: "${MINIO_USER}"
